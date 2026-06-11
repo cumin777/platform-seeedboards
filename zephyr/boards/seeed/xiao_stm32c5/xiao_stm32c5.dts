@@ -65,34 +65,30 @@
 
 &flash0 {
 	partitions {
+		compatible = "fixed-partitions";
 		#address-cells = <1>;
 		#size-cells = <1>;
-		ranges;
 
 		/* TinyUF2 Bootloader: 32KB */
 		boot_partition: partition@0 {
-			compatible = "zephyr,mapped-partition";
 			label = "uf2-bootloader";
 			reg = <0x00000000 DT_SIZE_K(32)>;
 		};
 
 		/* Application slot: 488KB (aligned with UF2 layout) */
 		slot0_partition: partition@8000 {
-			compatible = "zephyr,mapped-partition";
 			label = "image-0";
 			reg = <0x00008000 DT_SIZE_K(488)>;
 		};
 
 		/* OTA slot: 480KB */
 		slot1_partition: partition@82000 {
-			compatible = "zephyr,mapped-partition";
 			label = "image-1";
 			reg = <0x00082000 DT_SIZE_K(480)>;
 		};
 
 		/* Storage: 24KB */
 		storage_partition: partition@fa000 {
-			compatible = "zephyr,mapped-partition";
 			label = "storage";
 			reg = <0x000fa000 DT_SIZE_K(24)>;
 		};

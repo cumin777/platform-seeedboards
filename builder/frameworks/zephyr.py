@@ -69,16 +69,19 @@ for boards_subdir in ["arm", "seeed"]:
             dst = join(framework_boards_dir, board_name_dir)
             if not os.path.isdir(src):
                 continue
-            if os.path.exists(dst):
-                continue
             if boards_subdir == "arm":
-                try:
-                    os.symlink(src, dst)
-                    print(f"Linked board: {board_name_dir} -> {src}")
-                except OSError:
-                    _shutil.copytree(src, dst)
-                    print(f"Copied board: {board_name_dir} -> {dst}")
+                # Symlinks reflect source changes automatically; only create if missing
+                if not os.path.exists(dst):
+                    try:
+                        os.symlink(src, dst)
+                        print(f"Linked board: {board_name_dir} -> {src}")
+                    except OSError:
+                        _shutil.copytree(src, dst)
+                        print(f"Copied board: {board_name_dir} -> {dst}")
             else:
+                # Copied boards: always re-copy to pick up source changes
+                if os.path.exists(dst):
+                    _shutil.rmtree(dst)
                 _shutil.copytree(src, dst)
                 print(f"Copied board: {board_name_dir} -> {dst}")
 
