@@ -39,6 +39,11 @@ if board_name and "nrf" in board_name:
         PIOPLATFORM="nordicnrf52"
     )
 
+if board_name and "stm32" in board_name:
+    env.Replace(
+        PIOPLATFORM="ststm32"
+    )
+
 # Clone hal_nordic package from west.yaml if not present
 framework_dir = env.PioPlatform().get_package_dir("framework-zephyr")
 platform_dir = env.PioPlatform().get_dir()
@@ -180,6 +185,11 @@ SConscript(
     join(framework_dir, "scripts", "platformio", "platformio-build.py"), exports="env")
     
 if board_name and "nrf" in board_name:
+    env.Replace(
+        PIOPLATFORM=platform_name
+    )
+
+if board_name and "stm32" in board_name:
     env.Replace(
         PIOPLATFORM=platform_name
     )

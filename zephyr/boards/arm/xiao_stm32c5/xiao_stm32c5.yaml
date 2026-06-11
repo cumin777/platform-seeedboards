@@ -1,0 +1,14 @@
+identifier: xiao_stm32c5
+name: XIAO STM32C5
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - gnuarmemb
+ram: 256
+flash: 488
+supported:
+  - gpio
+  - uart
+  - watchdog
+vendor: seeed

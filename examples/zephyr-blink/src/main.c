@@ -7,7 +7,9 @@
  #include <zephyr/kernel.h>
  #include <zephyr/device.h>
  #include <zephyr/drivers/gpio.h>
+#if defined(CONFIG_NRFX_POWER)
  #include <nrfx_power.h>
+#endif
  
  /* 1000 msec = 1 sec */
  #define SLEEP_TIME_MS   1000
