@@ -92,12 +92,57 @@ target_size = env.AddPlatformTarget(
 )
 
 #
-# Target: Upload via stlink (STM32CubeProgrammer CLI)
+# Target: Upload firmware
 #
 debug_tools = env.BoardConfig().get("debug.tools", {})
 upload_actions = []
 
-if upload_protocol == "stlink":
+if upload_protocol == "uf2":
+    # Generate .bin for UF2 conversion
+    target_bin = env.ElfToBin(
+        join("$BUILD_DIR", "${PROGNAME}"), target_elf)
+
+    # UF2 conversion and upload via Python script
+    _tools_dir = join(platform.get_dir(), "builder", "tools")
+    _uf2_cfg = board.get("upload.uf2", {})
+    _uf2_base = board.get("upload.offset_address", "0x08008000")
+    _uf2_family_id = _uf2_cfg.get("family_id", "0x00C5C5C5")
+    _uf2_volume_label = _uf2_cfg.get("volume_label", "XIAOC5BOOT")
+
+    # Ensure UPLOAD_PORT has a default so SCons expansion is clean
+    env.SetDefault(UPLOAD_PORT="")
+
+    # Build the upload command. Use a wrapper script approach so that
+    # SCons variables ($SOURCE, $BUILD_DIR, $UPLOAD_PORT) are expanded
+    # at upload time.
+    _upload_cmd = ' '.join([
+        '"$PYTHONEXE"',
+        '"%s"' % join(_tools_dir, "uf2conv.py"),
+        '-i', '"$SOURCE"',
+        '-b', str(_uf2_base),
+        '--family-id', str(_uf2_family_id),
+        '-o', '"${BUILD_DIR}/${PROGNAME}.uf2"',
+        '&&',
+        '"$PYTHONEXE"',
+        '"%s"' % join(_tools_dir, "uf2upload.py"),
+        '"${BUILD_DIR}/${PROGNAME}.uf2"',
+        '--label', str(_uf2_volume_label),
+        '--port', '"${UPLOAD_PORT}"',
+    ])
+
+    env.Replace(
+        UPLOADCMD=_upload_cmd
+    )
+    upload_actions = [
+        env.VerboseAction(
+            "$UPLOADCMD",
+            "Converting and uploading via UF2"
+        )
+    ]
+    # Upload uses .bin as source (for UF2 conversion)
+    env.AddPlatformTarget("upload", target_bin, upload_actions, "Upload")
+
+elif upload_protocol == "stlink":
     # Use STM32CubeProgrammer CLI for STLink upload
     stm32prog = "STM32_Programmer_CLI"
     upload_offset = board.get("upload.offset_address", "0x08000000")
@@ -112,6 +157,7 @@ if upload_protocol == "stlink":
         UPLOADCMD="$UPLOADER $UPLOADERFLAGS"
     )
     upload_actions = [env.VerboseAction("$UPLOADCMD", "Uploading $SOURCE")]
+    env.AddPlatformTarget("upload", target_firm, upload_actions, "Upload")
 
 elif upload_protocol in debug_tools:
     # Fallback: use OpenOCD if configured
@@ -137,14 +183,14 @@ elif upload_protocol in debug_tools:
         UPLOADERFLAGS=openocd_args,
         UPLOADCMD="$UPLOADER $UPLOADERFLAGS")
     upload_actions = [env.VerboseAction("$UPLOADCMD", "Uploading $SOURCE")]
+    env.AddPlatformTarget("upload", target_firm, upload_actions, "Upload")
 
 elif upload_protocol == "custom":
     upload_actions = [env.VerboseAction("$UPLOADCMD", "Uploading $SOURCE")]
+    env.AddPlatformTarget("upload", target_firm, upload_actions, "Upload")
 
 else:
     sys.stderr.write("Warning! Unknown upload protocol %s\n" % upload_protocol)
-
-env.AddPlatformTarget("upload", target_firm, upload_actions, "Upload")
 
 #
 # Default targets
