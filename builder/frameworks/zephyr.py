@@ -52,25 +52,35 @@ hal_nordic_dir = join(framework_dir, "_pio", "modules", "hal", "nordic")
 
 # Symlink custom board definitions into Zephyr framework boards directory
 # so that Zephyr CMake can discover them during build configuration.
-platform_boards_dir = join(platform_dir, "zephyr", "boards", "arm")
-framework_boards_dir = join(framework_dir, "boards", "arm")
+# Zephyr <= 4.2 uses boards/arm/<board>/, Zephyr >= 4.3 uses boards/<vendor>/<board>/
+# Note: For vendor-based directories (Zephyr >= 4.3), we must copy instead of
+# symlink because Zephyr's list_boards.py uses pathlib.rglob() which doesn't
+# follow symlinks by default.
+import shutil as _shutil
 
-if os.path.isdir(platform_boards_dir):
-    os.makedirs(framework_boards_dir, exist_ok=True)
-    for board_name_dir in os.listdir(platform_boards_dir):
-        src = join(platform_boards_dir, board_name_dir)
-        dst = join(framework_boards_dir, board_name_dir)
-        if not os.path.isdir(src):
-            continue
-        if os.path.exists(dst) or os.path.islink(dst):
-            continue
-        try:
-            os.symlink(src, dst)
-            print(f"Linked board: {board_name_dir} -> {src}")
-        except OSError:
-            import shutil
-            shutil.copytree(src, dst)
-            print(f"Copied board: {board_name_dir} -> {dst}")
+for boards_subdir in ["arm", "seeed"]:
+    platform_boards_dir = join(platform_dir, "zephyr", "boards", boards_subdir)
+    framework_boards_dir = join(framework_dir, "boards", boards_subdir)
+
+    if os.path.isdir(platform_boards_dir):
+        os.makedirs(framework_boards_dir, exist_ok=True)
+        for board_name_dir in os.listdir(platform_boards_dir):
+            src = join(platform_boards_dir, board_name_dir)
+            dst = join(framework_boards_dir, board_name_dir)
+            if not os.path.isdir(src):
+                continue
+            if os.path.exists(dst):
+                continue
+            if boards_subdir == "arm":
+                try:
+                    os.symlink(src, dst)
+                    print(f"Linked board: {board_name_dir} -> {src}")
+                except OSError:
+                    _shutil.copytree(src, dst)
+                    print(f"Copied board: {board_name_dir} -> {dst}")
+            else:
+                _shutil.copytree(src, dst)
+                print(f"Copied board: {board_name_dir} -> {dst}")
 
 import re
 import time

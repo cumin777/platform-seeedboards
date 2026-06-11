@@ -1,5 +1,6 @@
 import sys
-from os.path import isdir, join, makedirs
+import os
+from os.path import isdir, join
 
 from SCons.Script import (ARGUMENTS, COMMAND_LINE_TARGETS, AlwaysBuild,
                           Builder, Default, DefaultEnvironment)

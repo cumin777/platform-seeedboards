@@ -9,6 +9,7 @@
 /dts-v1/;
 #include <st/c5/stm32c5a3Xg.dtsi>
 #include <st/c5/stm32c5(9-a)3z(e-g)tx-pinctrl.dtsi>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
 #include "seeed_xiao_connector.dtsi"
 
 / {
