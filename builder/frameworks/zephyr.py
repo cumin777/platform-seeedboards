@@ -127,63 +127,98 @@ def _git_clone_with_retry(url, dst, revision, max_retries=3, retry_delay=5):
 def _preinstall_west_deps(framework_dir, platform_name_hint):
     """Pre-install west.yml dependencies with retry so that install-deps.py
     can skip them later. This avoids the clean_up() wiping everything on
-    a single clone failure."""
+    a single clone failure.
+
+    Strategy:
+    - For each platform family, clone only the actually-needed HAL modules
+      (with git clone --depth 1 + retry).
+    - Create empty placeholder directories for ALL other west.yml projects so
+      that install-deps.py sees them as "already installed" and skips cloning.
+    - Write state.json with all revisions so future checks are instant.
+    """
     west_yml = join(framework_dir, "west.yml")
     if not os.path.isfile(west_yml):
         return
 
     pio_dir = join(framework_dir, "_pio")
 
+    # Determine which HAL modules are required based on platform
+    hal_modules_map = {
+        "nordicnrf52": ["hal_nordic"],
+        "nordicnrf51": ["hal_nordic"],
+        "ststm32": ["hal_stm32", "hal_st"],
+    }
+    needed_hals = hal_modules_map.get(platform_name_hint, [])
+    if not needed_hals:
+        return
+
     with open(west_yml, "r", encoding="utf-8") as f:
         west_data = yaml.safe_load(f)
     manifest = west_data.get("manifest", {})
     remotes = {r["name"]: r for r in manifest.get("remotes", [])}
     default_remote = manifest.get("defaults", {}).get("remote", "")
+    default_remote_url = remotes.get(default_remote, {}).get("url-base", "")
 
-    # Only pre-install for platforms that need hal_nordic (nordicnrf52, etc.)
-    hal_platforms = {"nordicnrf52", "nordicnrf51"}
-    if platform_name_hint not in hal_platforms:
-        return
+    # Core modules that must have real content (not just placeholders)
+    # These are needed by nearly every build
+    core_modules = {"cmsis", "cmsis_6"}
 
-    print("Pre-installing Zephyr west dependencies (with retry)...")
+    modules_to_clone = set(needed_hals) | core_modules
 
+    print("Pre-installing Zephyr west dependencies for %s..." % platform_name_hint)
+
+    state = {}
     for proj in manifest.get("projects", []):
         name = proj.get("name", "")
         proj_path = proj.get("path", name)
+        revision = proj.get("revision", "")
 
         # Skip tool packages
         if proj_path.startswith("tool") or name.startswith("nrf_hw_"):
             continue
 
-        # Only install HAL packages needed for nordic
-        if name.startswith("hal_") and name != "hal_nordic":
-            continue
-
         dst = join(pio_dir, proj_path)
-        if os.path.isdir(dst):
+        state[name] = revision
+
+        if os.path.isdir(dst) and os.listdir(dst):
+            # Already has content, skip
             continue
 
-        # Build URL
-        if "url" in proj:
-            proj_url = proj["url"]
-            if not proj_url.startswith("http"):
+        if name in modules_to_clone:
+            # Clone with retry
+            if "url" in proj:
+                proj_url = proj["url"]
+                if not proj_url.startswith("http"):
+                    url_base = remotes.get(
+                        proj.get("remote", default_remote), {}
+                    ).get("url-base", "")
+                    proj_url = url_base.rstrip("/") + "/" + proj_url.lstrip("/")
+            else:
                 url_base = remotes.get(
                     proj.get("remote", default_remote), {}
                 ).get("url-base", "")
-                proj_url = url_base.rstrip("/") + "/" + proj_url.lstrip("/")
+                repo_path = proj.get("repo-path", name)
+                proj_url = url_base.rstrip("/") + "/" + repo_path + ".git"
+
+            print(f"  Cloning: {name}")
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            _git_clone_with_retry(proj_url, dst, revision)
         else:
-            url_base = remotes.get(
-                proj.get("remote", default_remote), {}
-            ).get("url-base", "")
-            repo_path = proj.get("repo-path", name)
-            proj_url = url_base.rstrip("/") + "/" + repo_path + ".git"
+            # Create empty placeholder so install-deps.py thinks it's installed
+            os.makedirs(dst, exist_ok=True)
 
-        revision = proj.get("revision")
-        print(f"Pre-installing: {name}")
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        _git_clone_with_retry(proj_url, dst, revision)
+    # Also ensure _bare_module and bootloader exist (from the framework package itself)
+    for extra in [join(pio_dir, "_bare_module"), join(pio_dir, "bootloader")]:
+        if not os.path.isdir(extra):
+            os.makedirs(extra, exist_ok=True)
 
-    print("Pre-install complete.")
+    # Write state.json so install-deps.py can compare revisions efficiently
+    state_file = join(pio_dir, "state.json")
+    import json
+    with open(state_file, "w") as f:
+        json.dump(state, f, indent=2)
+
+    print("Pre-install complete (%d modules)." % len(state))
 
 
 # Pre-install west dependencies with retry before platformio-build.py runs
