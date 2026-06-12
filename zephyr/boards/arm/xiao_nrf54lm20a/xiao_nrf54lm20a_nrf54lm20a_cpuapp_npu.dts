@@ -1,0 +1,35 @@
+/*
+ * Copyright (c) 2026 Seeed Technology Co., Ltd.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Board target for the 20b test board: a XIAO nRF54LM20A carrier PCB with
+ * a nRF54LM20B chip. The board is electrically identical to the 20A board
+ * (same LEDs, PMIC, connectors, peripherals), so it reuses the full 20A
+ * device tree. The only addition is the Axon NPU block (provided by the
+ * 20B chip) which is pulled in via axon-npu.dtsi.
+ */
+
+/dts-v1/;
+
+#include "nrf54lm20a_cpuapp_common.dtsi"
+#include "seeed_xiao_connector.dtsi"
+#include "axon-npu.dtsi"
+
+/ {
+	compatible = "seeed,xiao_nrf54lm20a_nrf54lm20a-cpuapp-npu";
+	model = "Seeed XIAO nRF54LM20A (20B chip) NPU test board";
+
+	chosen {
+		zephyr,code-partition = &slot0_partition;
+		zephyr,sram = &cpuapp_sram;
+	};
+};
+
+&bt_hci_sdc {
+	status = "okay";
+};
+
+&bt_hci_controller {
+	status = "disabled";
+};
