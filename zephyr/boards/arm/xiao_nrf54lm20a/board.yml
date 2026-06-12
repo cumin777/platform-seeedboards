@@ -7,6 +7,8 @@ board:
     variants:
     - name: xip
       cpucluster: cpuflpr
+    - name: npu
+      cpucluster: cpuapp
 runners:
   run_once:
     '--recover':

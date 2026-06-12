@@ -6,24 +6,23 @@
  * Axon NPU node definition for nRF54LM20B chip mounted on a XIAO nRF54LM20A
  * carrier board (the "20b test board").
  *
- * The 20b test board uses the nRF54LM20A PCB (identical peripherals, LEDs,
- * PMIC and pinout) with the nRF54LM20B chip. The only additional hardware
- * block compared to the 20A SoC is the Axon NPU, which is not described by
- * the 20A SoC DTSI (nrf54lm20a_enga_cpuapp.dtsi). This fragment adds it.
- *
  * Register values mirror the upstream NCS definition found in
  * dts/vendor/nordic/nrf54lm20b.dtsi:
- *   axon: axon@56000 {
- *       compatible = "nordic,axon";
- *       reg = <0x56000 0x1000>;
- *       interrupts = <86 NRF_DEFAULT_IRQ_PRIORITY>;
+ *   &global_peripherals {
+ *       axon: axon@56000 {
+ *           compatible = "nordic,axon";
+ *           reg = <0x56000 0x1000>;
+ *           interrupts = <86 NRF_DEFAULT_IRQ_PRIORITY>;
+ *           status = "disabled";
+ *       };
  *   };
- * Upstream leaves the node "disabled"; here we flip it to "okay" so that
- * the NPU smoke test and Edge AI samples can probe it without an extra
- * overlay.
+ *
+ * The node is attached to &global_peripherals (inside the soc simple-bus)
+ * so that it inherits the interrupt-parent (cpuapp_nvic) from the parent
+ * soc node.
  */
 
-/ {
+&global_peripherals {
 	axon: axon@56000 {
 		compatible = "nordic,axon";
 		reg = <0x56000 0x1000>;
