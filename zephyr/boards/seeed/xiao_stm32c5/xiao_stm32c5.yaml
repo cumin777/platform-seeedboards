@@ -9,6 +9,8 @@ ram: 256
 flash: 488
 supported:
   - gpio
+  - i2c
   - uart
   - watchdog
+  - adc
 vendor: seeed

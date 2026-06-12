@@ -3,7 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * XIAO STM32C5 board definition.
- * Pin map follows nucleo_c5a3zg reference configuration for initial bring-up.
+ * MCU: STM32C5A3CG (UFQFPN48, Cortex-M33, 144MHz, 256KB SRAM, 1MB Flash)
+ * Pin map extracted from schematic 04 XIAO Header&STM32C5.kicad_sch and
+ * verified against STM32C5A3 datasheet DS15137-Rev1.
+ *
+ * UF2 bootloader constraint: application starts at 0x08008000 (32KB offset).
+ * Flash partitions, chosen code-partition, and ROM_START_OFFSET MUST NOT
+ * be modified — they are aligned with the TinyUF2 bootloader.
  */
 
 /dts-v1/;
@@ -17,35 +23,24 @@
 	compatible = "seeed,xiao-stm32c5";
 
 	chosen {
-		zephyr,console = &lpuart1;
-		zephyr,shell-uart = &lpuart1;
+		zephyr,console = &usart1;
+		zephyr,shell-uart = &usart1;
 		zephyr,sram = &sram1;
 		zephyr,flash = &flash0;
 		zephyr,code-partition = &slot0_partition;
 	};
 
 	aliases {
-		led0 = &green_led;
-		sw0 = &user_button;
+		led0 = &user_led;
 		watchdog0 = &iwdg;
-	};
-
-	gpio_keys {
-		compatible = "gpio-keys";
-
-		user_button: button {
-			label = "USER";
-			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
-			zephyr,code = <INPUT_KEY_0>;
-		};
 	};
 
 	leds: leds {
 		compatible = "gpio-leds";
 
-		green_led: led_0 {
-			gpios = <&gpioa 5 GPIO_ACTIVE_HIGH>;
-			label = "LD1";
+		user_led: led_0 {
+			gpios = <&gpiob 12 GPIO_ACTIVE_LOW>;
+			label = "User LED";
 		};
 	};
 };
@@ -69,13 +64,13 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 
-		/* TinyUF2 Bootloader: 32KB */
+		/* TinyUF2 Bootloader: 32KB — DO NOT MODIFY */
 		boot_partition: partition@0 {
 			label = "uf2-bootloader";
 			reg = <0x00000000 DT_SIZE_K(32)>;
 		};
 
-		/* Application slot: 488KB (aligned with UF2 layout) */
+		/* Application slot: 488KB (aligned with UF2 layout) — DO NOT MODIFY */
 		slot0_partition: partition@8000 {
 			label = "image-0";
 			reg = <0x00008000 DT_SIZE_K(488)>;
@@ -95,10 +90,17 @@
 	};
 };
 
-&lpuart1 {
-	pinctrl-0 = <&lpuart1_tx_pa3 &lpuart1_rx_pa2>;
+&usart1 {
+	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>;
 	pinctrl-names = "default";
 	current-speed = <115200>;
+	status = "okay";
+};
+
+&i2c1 {
+	pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
+	pinctrl-names = "default";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
 	status = "okay";
 };
 
