@@ -101,6 +101,58 @@ import re
 import time
 
 
+def _inject_edge_ai_module(framework_dir, board_name_str, env_obj):
+    """Inject sdk-edge-ai into the framework's west.yml for NPU boards.
+
+    This allows platformio-build.py to discover the module via west.yml
+    and pass it as a ZEPHYR_MODULE to CMake.  The injection is idempotent.
+    Only injected when the project requests it via board_build.edge_ai = true,
+    because the sdk-edge-ai module requires NCS 3.3.0 headers for full
+    compilation.
+    """
+    if not board_name_str or "-npu" not in board_name_str:
+        return
+
+    # Only inject when the project explicitly requests Edge AI SDK
+    try:
+        use_edge_ai = str(env_obj.GetProjectOption("board_build.edge_ai", "false"))
+        if use_edge_ai.lower() not in ("true", "yes", "1"):
+            return
+    except Exception:
+        return
+
+    west_yml = join(framework_dir, "west.yml")
+    if not os.path.isfile(west_yml):
+        return
+
+    with open(west_yml, "r", encoding="utf-8") as f:
+        west_data = yaml.safe_load(f)
+
+    manifest = west_data.get("manifest", {})
+    projects = manifest.get("projects", [])
+
+    # Check if sdk-edge-ai is already present
+    for proj in projects:
+        if proj.get("name") == "sdk-edge-ai":
+            return
+
+    # Add sdk-edge-ai project entry
+    edge_ai_entry = {
+        "name": "sdk-edge-ai",
+        "url": "https://github.com/nrfconnect/sdk-edge-ai",
+        "revision": "main",
+        "path": "modules/sdk-edge-ai",
+    }
+    projects.append(edge_ai_entry)
+    manifest["projects"] = projects
+    west_data["manifest"] = manifest
+
+    with open(west_yml, "w", encoding="utf-8") as f:
+        yaml.dump(west_data, f, default_flow_style=False, allow_unicode=True)
+
+    print("Injected sdk-edge-ai into west.yml for Edge AI SDK support")
+
+
 def _is_commit_hash(value):
     return value and re.match(r"[0-9a-f]{7,}$", value) is not None
 
@@ -209,6 +261,10 @@ def _preinstall_west_deps(framework_dir, platform_name_hint):
 
     print("Pre-install complete.")
 
+
+# Inject sdk-edge-ai module for NPU boards so that both the preinstall
+# step and platformio-build.py can discover it via west.yml.
+_inject_edge_ai_module(framework_dir, board_name, env)
 
 # Pre-install west dependencies with retry before platformio-build.py runs
 # This ensures they exist when install-deps.py checks, avoiding its
