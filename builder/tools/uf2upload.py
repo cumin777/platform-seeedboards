@@ -3,7 +3,8 @@
 UF2 upload tool for TinyUF2 bootloader.
 
 Detects the UF2 mass storage device, optionally triggers bootloader mode
-via serial DTR toggle, and copies the .uf2 firmware file.
+via serial 1200-baud touch (for boards with USB CDC support), and writes
+the .uf2 firmware file to the virtual FAT drive.
 
 Supports: Linux, Windows, macOS
 """
@@ -11,7 +12,6 @@ Supports: Linux, Windows, macOS
 import os
 import sys
 import time
-import shutil
 import argparse
 import subprocess
 import platform
@@ -79,13 +79,13 @@ def _find_uf2_drive_linux():
 
 
 def _find_uf2_drive_windows():
-    """Find UF2 drive on Windows using wmic or powershell."""
+    """Find UF2 drive on Windows using powershell."""
     try:
         result = subprocess.run(
             ["powershell", "-Command",
-             "Get-WmiObject Win32_LogicalDisk | "
-             "Where-Object { $_.VolumeName -eq '" + UF2_VOLUME_LABEL + "' } | "
-             "Select-Object -ExpandProperty DeviceID"],
+             "(Get-WmiObject Win32_LogicalDisk | "
+             "Where-Object { $_.VolumeName -eq '" + UF2_VOLUME_LABEL
+             + "' }).DeviceID"],
             capture_output=True, text=True, timeout=10
         )
         drive = result.stdout.strip()
@@ -93,29 +93,6 @@ def _find_uf2_drive_windows():
             return drive
     except Exception:
         pass
-
-    try:
-        result = subprocess.run(
-            ["wmic", "logicaldisk", "get", "volumename,name",
-             "/format:list"],
-            capture_output=True, text=True, timeout=10
-        )
-        lines = result.stdout.strip().split("\n")
-        current_name = None
-        for line in lines:
-            line = line.strip()
-            if line.startswith("Name="):
-                current_name = line[5:]
-            elif line.startswith("VolumeName="):
-                volname = line[11:]
-                if volname.upper() == UF2_VOLUME_LABEL.upper() and current_name:
-                    drive = current_name
-                    if os.path.isdir(drive):
-                        return drive
-                current_name = None
-    except Exception:
-        pass
-
     return None
 
 
@@ -162,59 +139,145 @@ def wait_for_uf2_drive(timeout=UF2_DRIVE_TIMEOUT):
 # Bootloader trigger
 # ---------------------------------------------------------------------------
 
-def trigger_bootloader_serial(port, baud=1200):
-    """Try to trigger bootloader mode via serial DTR toggle.
+def trigger_bootloader_1200baud(port):
+    """Trigger bootloader via 1200 baud touch.
 
-    This simulates a double-tap reset by toggling DTR twice with a short
-    delay, matching TinyUF2's double-tap detection window (500ms).
+    This is the standard mechanism used by CircuitPython, Adafruit UF2,
+    and Arduino boards. When the application firmware detects a 1200 baud
+    connection, it writes the double-tap magic to RAM and resets into
+    bootloader mode.
+
+    Works only if the application firmware implements USB CDC with
+    1200-baud detection.
     """
     try:
         import serial
     except ImportError:
-        print("  pyserial not installed, skipping serial trigger")
         return False
 
     try:
-        s = serial.Serial(port, baud)
-        # First reset: toggle DTR
+        # Open at 1200 baud - this is the "magic" signal
+        s = serial.Serial(port, 1200)
+        time.sleep(0.1)
+        # Toggle DTR to ensure the signal is sent
+        s.dtr = False
+        time.sleep(0.05)
+        s.dtr = True
+        time.sleep(0.05)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+def trigger_bootloader_dtr_double_tap(port):
+    """Trigger bootloader via DTR double-tap simulation.
+
+    For boards where the USB-serial chip's DTR is connected to the MCU's
+    NRST pin (e.g. via a capacitor). Toggles DTR twice within the 500ms
+    double-tap window of TinyUF2.
+    """
+    try:
+        import serial
+    except ImportError:
+        return False
+
+    try:
+        s = serial.Serial(port, 115200)
+        # First reset
         s.dtr = False
         time.sleep(0.05)
         s.dtr = True
         # Wait within the 500ms double-tap window
         time.sleep(0.2)
-        # Second reset: toggle DTR again (double-tap)
+        # Second reset (double-tap)
         s.dtr = False
         time.sleep(0.05)
         s.dtr = True
         time.sleep(0.1)
         s.close()
         return True
-    except Exception as e:
-        print(f"  Serial trigger failed: {e}")
+    except Exception:
         return False
+
+
+def trigger_bootloader(port):
+    """Try all bootloader trigger methods on a serial port."""
+    # Method 1: 1200 baud touch (standard UF2 mechanism)
+    if trigger_bootloader_1200baud(port):
+        return True
+    # Method 2: DTR double-tap (hardware reset connection)
+    if trigger_bootloader_dtr_double_tap(port):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
 # UF2 file copy
 # ---------------------------------------------------------------------------
 
-def copy_uf2_to_drive(uf2_path, drive_path):
-    """Copy UF2 file to the mass storage device."""
+def write_uf2_to_drive(uf2_path, drive_path):
+    """Write UF2 firmware to the bootloader drive using raw binary I/O.
+
+    Uses raw chunked write instead of shutil.copy2 because TinyUF2's
+    virtual FAT filesystem (ghostfat) does not support file metadata
+    operations. shutil.copy2 fails with WinError 433 on Windows.
+
+    The bootloader intercepts sector writes and processes UF2 blocks
+    in real-time. When all blocks are received, the device resets
+    automatically (drive disappears).
+    """
     dest = os.path.join(drive_path, os.path.basename(uf2_path))
-    # On some systems, the drive might have a specific expected filename
-    # TinyUF2 accepts any .uf2 file copied to the root
+    chunk_size = 512  # Match UF2 block / FAT sector size
+
     try:
-        shutil.copy2(uf2_path, dest)
-        # Force sync to ensure data is flushed before drive disconnects
-        if platform.system() == "Linux":
-            try:
-                subprocess.run(["sync"], timeout=10)
-            except Exception:
-                pass
-        time.sleep(1)
+        with open(uf2_path, "rb") as src:
+            with open(dest, "wb") as dst:
+                while True:
+                    chunk = src.read(chunk_size)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                dst.flush()
+                try:
+                    os.fsync(dst.fileno())
+                except OSError:
+                    pass
         return True
-    except Exception as e:
-        print(f"  Copy failed: {e}")
+    except OSError as e:
+        # If the drive disappears after writing, the bootloader received
+        # the firmware and is resetting - this is actually success.
+        errno = getattr(e, "winerror", getattr(e, "errno", 0))
+        if errno == 433:  # WinError 433: device does not exist
+            # Check if the drive is gone (device reset = upload success)
+            time.sleep(1)
+            if not find_uf2_drive():
+                return True
+        print(f"  Write error: {e}")
+        return False
+
+
+def write_uf2_cmd(uf2_path, drive_path):
+    """Fallback: use OS copy command for writing UF2 file."""
+    dest = os.path.join(drive_path, os.path.basename(uf2_path))
+    system = platform.system()
+
+    try:
+        if system == "Windows":
+            # Use xcopy for better compatibility with virtual filesystems
+            result = subprocess.run(
+                ["cmd", "/c", "copy", "/B", "/Y", uf2_path, dest],
+                capture_output=True, text=True, timeout=30
+            )
+            return result.returncode == 0
+        elif system == "Linux":
+            subprocess.run(["cp", uf2_path, dest], timeout=30, check=True)
+            subprocess.run(["sync"], timeout=10)
+            return True
+        else:  # macOS
+            subprocess.run(["cp", uf2_path, dest], timeout=30, check=True)
+            return True
+    except Exception:
         return False
 
 
@@ -249,13 +312,11 @@ def upload_uf2(uf2_path, serial_port=None, timeout=UF2_DRIVE_TIMEOUT):
         # Step 2: Try serial trigger
         if serial_port:
             print(f"  Triggering bootloader via {serial_port}...")
-            trigger_bootloader_serial(serial_port)
+            trigger_bootloader(serial_port)
         else:
-            print("  No serial port specified, attempting auto-detect...")
-            # Try common serial ports
+            print("  Attempting serial bootloader trigger...")
             for candidate in _detect_serial_ports():
-                print(f"  Trying {candidate}...")
-                trigger_bootloader_serial(candidate)
+                trigger_bootloader(candidate)
 
         # Step 3: Wait for drive
         print(f"  Waiting for UF2 drive (double-tap RESET if needed, "
@@ -271,14 +332,27 @@ def upload_uf2(uf2_path, serial_port=None, timeout=UF2_DRIVE_TIMEOUT):
             return False
         print(f"\n  Found UF2 drive: {drive}")
 
-    # Step 4: Copy .uf2 file
-    print("  Copying firmware...")
-    if copy_uf2_to_drive(uf2_path, drive):
-        print("  Upload complete! Board will restart automatically.")
+    # Step 4: Write .uf2 file (try raw I/O first, fallback to OS command)
+    print("  Writing firmware...")
+    if write_uf2_to_drive(uf2_path, drive):
+        # Give the bootloader time to process and reset
+        time.sleep(2)
+        if not find_uf2_drive():
+            # Drive disappeared = device reset = upload success
+            print("  Upload complete! Board is restarting.")
+        else:
+            print("  Upload complete! Board will restart shortly.")
         return True
-    else:
-        print("  Error: Failed to copy UF2 file.")
-        return False
+
+    # Fallback: try OS copy command
+    print("  Raw write failed, trying OS copy command...")
+    if write_uf2_cmd(uf2_path, drive):
+        time.sleep(2)
+        print("  Upload complete!")
+        return True
+
+    print("  Error: Failed to write UF2 file.")
+    return False
 
 
 def _detect_serial_ports():
@@ -289,15 +363,21 @@ def _detect_serial_ports():
         for info in serial.tools.list_ports.comports():
             ports.append(info.device)
     except Exception:
-        # Fallback: scan common paths
         if platform.system() == "Linux":
             for p in ["/dev/ttyACM0", "/dev/ttyACM1",
                       "/dev/ttyUSB0", "/dev/ttyUSB1"]:
                 if os.path.exists(p):
                     ports.append(p)
         elif platform.system() == "Windows":
-            for i in range(10):
-                ports.append(f"COM{i}")
+            for i in range(256):
+                candidate = f"COM{i}"
+                try:
+                    import serial
+                    s = serial.Serial(candidate)
+                    s.close()
+                    ports.append(candidate)
+                except Exception:
+                    pass
     return ports
 
 
@@ -328,18 +408,17 @@ def main():
 
     args = parser.parse_args()
 
-    # Override volume label if specified
     if args.label:
         set_volume_label(args.label)
 
     if args.trigger_only:
         if args.port:
             print(f"Triggering bootloader via {args.port}...")
-            trigger_bootloader_serial(args.port)
+            trigger_bootloader(args.port)
         else:
             for port in _detect_serial_ports():
                 print(f"Trying {port}...")
-                trigger_bootloader_serial(port)
+                trigger_bootloader(port)
         return
 
     success = upload_uf2(args.uf2_file, args.port, args.timeout)
