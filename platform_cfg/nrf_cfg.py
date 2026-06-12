@@ -43,6 +43,19 @@ def configure_nrf_default_packages(self, variables, targets):
             if not IS_WINDOWS:
                 self.packages["tool-gperf"]["optional"] = False
 
+            # Edge AI / NPU boards (nRF54LM20B chip) can use either the
+            # stable framework-zephyr package (already contains nrf54lm20b
+            # + Axon NPU DTS, enough for basic NPU access) or the dedicated
+            # framework-zephyr-ncs330 package (NCS 3.3.0 with Edge AI SDK).
+            # Switch only when the project explicitly opts in via
+            # board_build.zephyr_ncs330 = true.
+            if board and ("nrf54lm20b" in board or "-npu" in board):
+                use_ncs330 = str(variables.get("board_build.zephyr_ncs330", "false"))
+                if use_ncs330.lower() in ("true", "yes", "1"):
+                    self.frameworks["zephyr"]["package"] = "framework-zephyr-ncs330"
+                    # NCS 3.3.0 may require a newer GCC toolchain
+                    self.packages["toolchain-gccarmnoneeabi"]["version"] = "~1.90201.0"
+
     if set(["bootloader", "erase"]) & set(targets):
         self.packages["tool-nrfjprog"]["optional"] = False
     elif (upload_protocol and upload_protocol != "nrfjprog"

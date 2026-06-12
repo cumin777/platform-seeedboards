@@ -251,6 +251,15 @@
         "~3.40100.0"
       ]
     },
+    "framework-zephyr-ncs330": {
+      "type": "framework",
+      "optional": true,
+      "owner": "platformio",
+      "version": "~3.40300.0",
+      "optionalVersions": [
+        "~3.40300.0"
+      ]
+    },
     "tool-adafruit-nrfutil": {
       "owner": "platformio",
       "optional": true,

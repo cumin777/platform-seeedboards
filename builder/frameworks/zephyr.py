@@ -39,33 +39,63 @@ if board_name and "nrf" in board_name:
         PIOPLATFORM="nordicnrf52"
     )
 
+# Determine which Zephyr framework package to use.
+# Default: framework-zephyr (stable, already contains nrf54lm20b + Axon NPU DTS).
+# Optional: framework-zephyr-ncs330 (NCS 3.3.0 with Edge AI SDK), enabled by
+# the project via board_build.zephyr_ncs330 = true on NPU / 20B boards.
+# Must mirror the logic in platform_cfg/nrf_cfg.py::configure_nrf_default_packages.
+fw_pkg_name = "framework-zephyr"
+if board_name and ("nrf54lm20b" in board_name or "-npu" in board_name):
+    try:
+        use_ncs330 = str(env.GetProjectOption("board_build.zephyr_ncs330", "false"))
+        if use_ncs330.lower() in ("true", "yes", "1"):
+            fw_pkg_name = "framework-zephyr-ncs330"
+    except Exception:
+        pass
+
+framework_dir = env.PioPlatform().get_package_dir(fw_pkg_name)
+if not os.path.isdir(framework_dir):
+    print("Warning: '%s' package not installed; falling back to framework-zephyr"
+          % fw_pkg_name)
+    fw_pkg_name = "framework-zephyr"
+    framework_dir = env.PioPlatform().get_package_dir(fw_pkg_name)
+
+print("Using Zephyr framework package: %s" % fw_pkg_name)
+
 # Clone hal_nordic package from west.yaml if not present
-framework_dir = env.PioPlatform().get_package_dir("framework-zephyr")
 platform_dir = env.PioPlatform().get_dir()
 west_yml_path = join(framework_dir, "west.yml")
 hal_nordic_dir = join(framework_dir, "_pio", "modules", "hal", "nordic")
 
-# Symlink custom board definitions into Zephyr framework boards directory
+# Copy custom board definitions into Zephyr framework boards directory
 # so that Zephyr CMake can discover them during build configuration.
+# We copy (not symlink) because Zephyr's CMake board discovery doesn't
+# reliably follow symlink chains.  The copy is refreshed on every build
+# so that edits to the platform's board files take effect immediately.
 platform_boards_dir = join(platform_dir, "zephyr", "boards", "arm")
 framework_boards_dir = join(framework_dir, "boards", "arm")
 
 if os.path.isdir(platform_boards_dir):
+    import shutil
     os.makedirs(framework_boards_dir, exist_ok=True)
     for board_name_dir in os.listdir(platform_boards_dir):
         src = join(platform_boards_dir, board_name_dir)
         dst = join(framework_boards_dir, board_name_dir)
         if not os.path.isdir(src):
             continue
-        if os.path.exists(dst) or os.path.islink(dst):
-            continue
+        # Remove stale copy (broken symlink or outdated directory) then re-copy
+        if os.path.islink(dst) or os.path.exists(dst):
+            try:
+                if os.path.islink(dst):
+                    os.remove(dst)
+                else:
+                    shutil.rmtree(dst)
+            except Exception:
+                pass
         try:
-            os.symlink(src, dst)
-            print(f"Linked board: {board_name_dir} -> {src}")
-        except OSError:
-            import shutil
-            shutil.copytree(src, dst)
-            print(f"Copied board: {board_name_dir} -> {dst}")
+            shutil.copytree(src, dst, symlinks=False)
+        except Exception as e:
+            print("Warning: failed to copy board %s: %s" % (board_name_dir, e))
 
 import re
 import time
@@ -140,13 +170,22 @@ def _preinstall_west_deps(framework_dir, platform_name_hint):
         if proj_path.startswith("tool") or name.startswith("nrf_hw_"):
             continue
 
-        # Only install HAL packages needed for nordic
+        # Allow only modules this platform needs:
+        # - hal_nordic: required by all nRF boards (provides SoC DTSI files)
+        # - sdk-edge-ai: Edge AI Add-on SDK (Axon NPU / Neuton), only listed
+        #   in the NCS 3.3.0 package west.yml; ignored when absent
+        allowed_modules = ("hal_nordic", "sdk-edge-ai")
         if name.startswith("hal_") and name != "hal_nordic":
+            continue
+        if name not in allowed_modules:
             continue
 
         dst = join(pio_dir, proj_path)
-        if os.path.isdir(dst):
+        if os.path.isdir(dst) and os.listdir(dst):
             continue
+        # Remove empty placeholder so git clone can proceed
+        if os.path.isdir(dst) and not os.listdir(dst):
+            os.rmdir(dst)
 
         # Build URL
         if "url" in proj:
