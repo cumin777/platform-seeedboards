@@ -1,0 +1,54 @@
+/*
+ * Copyright (c) 2026 Seeed Technology Co., Ltd.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Overlay for Nucleo C5A3ZG validation.
+ * Adapts seeed-xiao-stm32c5 board definition to match nucleo hardware:
+ *   - LED LD1 on PA5 (active-high) instead of XIAO PB12 (active-low)
+ *   - Console on LPUART1 (PA3/PA2, STLink VCP) instead of USART1 (PA9/PA10)
+ *   - User button on PC13 (nucleo B1)
+ *
+ * Flash layout (UF2 partitions) is inherited unchanged from the base DTS
+ * since both boards share the same MCU die (STM32C5A3, 1MB Flash).
+ */
+
+/ {
+	chosen {
+		zephyr,console = &lpuart1;
+		zephyr,shell-uart = &lpuart1;
+	};
+
+	aliases {
+		sw0 = &nucleo_user_button;
+	};
+
+	leds {
+		user_led: led_0 {
+			gpios = <&gpioa 5 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	nucleo_keys: nucleo_gpio_keys {
+		compatible = "gpio-keys";
+
+		nucleo_user_button: nucleo_button {
+			label = "USER";
+			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+};
+
+/* XIAO console pins not connected on nucleo */
+&usart1 {
+	status = "disabled";
+};
+
+/* Nucleo STLink VCP console */
+&lpuart1 {
+	pinctrl-0 = <&lpuart1_tx_pa3 &lpuart1_rx_pa2>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	tx-rx-swap;
+	status = "okay";
+};
