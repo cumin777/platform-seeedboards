@@ -421,7 +421,7 @@ def main():
                 trigger_bootloader(port)
         return
 
-    success = upload_uf2(args.uf2_file, args.port, args.timeout)
+    success = upload_uf2(args.uf2_file, args.port or None, args.timeout)
     sys.exit(0 if success else 1)
 
 

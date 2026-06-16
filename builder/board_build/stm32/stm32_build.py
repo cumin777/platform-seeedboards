@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 from os.path import isdir, join
 
 from SCons.Script import (ARGUMENTS, COMMAND_LINE_TARGETS, AlwaysBuild,
@@ -109,9 +110,6 @@ if upload_protocol == "uf2":
     _uf2_family_id = _uf2_cfg.get("family_id", "0x00C5C5C5")
     _uf2_volume_label = _uf2_cfg.get("volume_label", "XIAOC5BOOT")
 
-    # Ensure UPLOAD_PORT has a default so SCons expansion is clean
-    env.SetDefault(UPLOAD_PORT="")
-
     # Build the upload command. Use a wrapper script approach so that
     # SCons variables ($SOURCE, $BUILD_DIR, $UPLOAD_PORT) are expanded
     # at upload time.
@@ -133,7 +131,20 @@ if upload_protocol == "uf2":
     env.Replace(
         UPLOADCMD=_upload_cmd
     )
+
+    def _uf2_before_upload(target, source, env):  # pylint: disable=W0613,W0621
+        env.AutodetectUploadPort()
+        upload_options = board.get("upload", {})
+        if bool(upload_options.get("use_1200bps_touch", False)):
+            env.TouchSerialPort("$UPLOAD_PORT", 1200)
+            # Give the board time to reboot into TinyUF2 bootloader mode
+            time.sleep(0.5)
+
     upload_actions = [
+        env.VerboseAction(
+            _uf2_before_upload,
+            "Triggering bootloader via 1200-bps touch"
+        ),
         env.VerboseAction(
             "$UPLOADCMD",
             "Converting and uploading via UF2"
