@@ -1,0 +1,7 @@
+/*
+ * Copyright (c) 2026 Seeed Studio
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* TFLM runs on CPU only; Axon NPU not needed for this sample.
+ * Keep minimal overlay to match board variant naming. */
