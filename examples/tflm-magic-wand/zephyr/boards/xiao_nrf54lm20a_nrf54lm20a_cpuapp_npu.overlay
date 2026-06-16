@@ -1,0 +1,2 @@
+/* TFLM magic_wand — minimal overlay for board variant match.
+ * The LSM6DS3TR-C IMU is already enabled in the board DTS (alias imu0). */
