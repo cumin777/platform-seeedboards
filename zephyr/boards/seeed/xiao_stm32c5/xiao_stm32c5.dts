@@ -33,6 +33,7 @@
 	aliases {
 		led0 = &user_led;
 		watchdog0 = &iwdg;
+		can0 = &fdcan1;
 	};
 
 	leds: leds {
@@ -42,6 +43,64 @@
 			gpios = <&gpiob 12 GPIO_ACTIVE_LOW>;
 			label = "User LED";
 		};
+	};
+
+	/*
+	 * CAN transceiver: the standby pin (CAN_STB = PB14, XIAO D15) is
+	 * driven LOW (inactive) during normal operation and HIGH (active)
+	 * when the CAN bus is idle/disabled to reduce power consumption.
+	 */
+	can_phy0: can-phy0 {
+		compatible = "can-transceiver-gpio";
+		standby-gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>;
+		max-bitrate = <5000000>;
+		#phy-cells = <0>;
+	};
+};
+
+/*
+ * FDCAN peripheral definitions.
+ *
+ * NOTE: The upstream Zephyr STM32C5 SoC DTSI (as of this writing) does not
+ * yet define fdcan1/fdcan2 nodes. The definitions below are derived from
+ * the STM32C5A3 CMSIS header (stm32c5a3xx.h):
+ *   - FDCAN1_BASE  = APB1PERIPH_BASE + 0xA400 = 0x4000A400
+ *   - FDCAN2_BASE  = APB1PERIPH_BASE + 0xA800 = 0x4000A800
+ *   - SRAMCAN_BASE = APB1PERIPH_BASE + 0xAC00 = 0x4000AC00 (shared message RAM)
+ *   - FDCAN1 interrupts: IT0 = 34, IT1 = 35
+ *   - FDCAN2 interrupts: IT0 = 86, IT1 = 87
+ *   - Clock enable: RCC_APB1HENR bit 9  ->  STM32_CLOCK(APB1_2, 9)
+ *   - Kernel clock: CCIPR1 bits 27:26   ->  FDCAN_SEL()
+ *
+ * When upstream Zephyr adds these nodes to the SoC DTSI, the full
+ * definitions here can be removed, leaving only the board-specific
+ * pinctrl/status overrides.
+ */
+/ {
+	fdcan1: can@4000a400 {
+		compatible = "st,stm32-fdcan";
+		reg = <0x4000a400 0x400>, <0x4000ac00 0x350>;
+		reg-names = "m_can", "message_ram";
+		interrupt-parent = <&nvic>;
+		interrupts = <34 0>, <35 0>;
+		interrupt-names = "int0", "int1";
+		clocks = <&rcc STM32_CLOCK(APB1_2, 9)>,
+			 <&rcc STM32_SRC_HSIS FDCAN_SEL(2)>;
+		bosch,mram-cfg = <0x0 28 8 3 3 0 3 3>;
+		status = "disabled";
+	};
+
+	fdcan2: can@4000a800 {
+		compatible = "st,stm32-fdcan";
+		reg = <0x4000a800 0x400>, <0x4000ac00 0x350>;
+		reg-names = "m_can", "message_ram";
+		interrupt-parent = <&nvic>;
+		interrupts = <86 0>, <87 0>;
+		interrupt-names = "int0", "int1";
+		clocks = <&rcc STM32_CLOCK(APB1_2, 9)>,
+			 <&rcc STM32_SRC_HSIS FDCAN_SEL(2)>;
+		bosch,mram-cfg = <0x350 28 8 3 3 0 3 3>;
+		status = "disabled";
 	};
 };
 
@@ -55,6 +114,10 @@
 };
 
 &clk_hsis {
+	status = "okay";
+};
+
+&clk_lsi {
 	status = "okay";
 };
 
@@ -104,6 +167,25 @@
 	status = "okay";
 };
 
+&adc1 {
+	pinctrl-0 = <&adc1_in0_pa0 &adc1_in1_pa1 &adc1_in2_pa2 &adc1_in3_pa3>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&fdcan1 {
+	pinctrl-0 = <&fdcan1_rx_pb8 &fdcan1_tx_pb9>;
+	pinctrl-names = "default";
+	phys = <&can_phy0>;
+	status = "okay";
+};
+
+&rtc {
+	clocks = <&rcc STM32_CLOCK(APB3, 21)>,
+		 <&rcc STM32_SRC_LSI RTC_SEL(2)>;
+	status = "okay";
+};
+
 &rcc {
 	clocks = <&clk_hsis>;
 	clock-frequency = <DT_FREQ_M(144)>;
@@ -116,3 +198,6 @@
 &iwdg {
 	status = "okay";
 };
+
+/* XIAO connector CAN alias (must be after fdcan1 definition above) */
+xiao_can: &fdcan1 {};

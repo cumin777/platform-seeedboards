@@ -13,4 +13,5 @@ supported:
   - uart
   - watchdog
   - adc
+  - can
 vendor: seeed
