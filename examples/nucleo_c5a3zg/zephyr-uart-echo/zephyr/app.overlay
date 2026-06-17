@@ -1,0 +1,43 @@
+/*
+ * Nucleo C5A3ZG pin overlay for seeed-xiao-stm32c5 board definition.
+ * LED -> PA5, console -> LPUART1 PA3/PA2, button -> PC13.
+ */
+
+/ {
+	chosen {
+		zephyr,console = &lpuart1;
+		zephyr,shell-uart = &lpuart1;
+	};
+
+	aliases {
+		sw0 = &nucleo_user_button;
+	};
+
+	leds {
+		user_led: led_0 {
+			gpios = <&gpioa 5 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	nucleo_keys: nucleo_gpio_keys {
+		compatible = "gpio-keys";
+
+		nucleo_user_button: nucleo_button {
+			label = "USER";
+			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+};
+
+&usart1 {
+	status = "disabled";
+};
+
+&lpuart1 {
+	pinctrl-0 = <&lpuart1_tx_pa3 &lpuart1_rx_pa2>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	tx-rx-swap;
+	status = "okay";
+};
