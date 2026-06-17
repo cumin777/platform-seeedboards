@@ -229,6 +229,45 @@ def _preinstall_west_deps(framework_dir, platform_name_hint):
 # destructive clean_up() on any single failure.
 _preinstall_west_deps(framework_dir, env.subst("$PIOPLATFORM"))
 
+# Inject platform-specific Zephyr modules (e.g. uf2_dfu_reset for STM32C5)
+# into the ZEPHYR_EXTRA_MODULES env var so that platformio-build.py
+# can append them to the CMake -DZEPHYR_MODULES list.
+#
+# IMPORTANT: The module must live in a path WITHOUT spaces. The platform
+# directory may contain spaces (e.g. "Seeed Studio"), which breaks
+# zephyr_module.py's argument parsing. We copy the module into the
+# framework's _pio/modules/ directory (space-free) and use that path.
+_extra_modules = []
+if board_name and "stm32c5" in board_name:
+    _src_mod = join(platform_dir, "zephyr", "modules", "uf2_dfu_reset")
+    if os.path.isdir(_src_mod):
+        _dst_mod = join(framework_dir, "_pio", "modules", "uf2_dfu_reset")
+        # Always re-copy to pick up source changes during development
+        if os.path.exists(_dst_mod):
+            _shutil.rmtree(_dst_mod)
+        _shutil.copytree(_src_mod, _dst_mod)
+        _extra_modules.append(_dst_mod)
+if _extra_modules:
+    os.environ["ZEPHYR_EXTRA_MODULES"] = ";".join(_extra_modules)
+else:
+    os.environ.pop("ZEPHYR_EXTRA_MODULES", None)
+
+# Apply platform-carried overrides onto framework-zephyr. Each file under
+# zephyr/overrides/ is mirrored onto framework_dir by its relative path.
+# Used to carry patches that upstream Zephyr only gained after the pinned
+# framework release — e.g. the udc_stm32.c HAL2 compatibility layer for
+# STM32C5 (Zephyr PR #105957, landed post-4.4.0). The patch is guarded by
+# #ifdef CONFIG_STM32_HAL2 so applying it is harmless on non-C5 boards.
+_overrides_root = join(platform_dir, "zephyr", "overrides")
+if os.path.isdir(_overrides_root):
+    for _root, _dirs, _files in os.walk(_overrides_root):
+        for _f in _files:
+            _src = join(_root, _f)
+            _rel = os.path.relpath(_src, _overrides_root)
+            _dst = join(framework_dir, _rel)
+            os.makedirs(os.path.dirname(_dst), exist_ok=True)
+            _shutil.copy2(_src, _dst)
+
 SConscript(
     join(framework_dir, "scripts", "platformio", "platformio-build.py"), exports="env")
     

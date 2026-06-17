@@ -102,6 +102,35 @@
 		bosch,mram-cfg = <0x350 28 8 3 3 0 3 3>;
 		status = "disabled";
 	};
+
+	/*
+	 * USB DRD FS controller (USB_DRD_FS).
+	 * Base: 0x40016000, PMA: 0x40016400, IRQ: 62, Clock: APB2 bit 24.
+	 * Kernel clock CK48 sourced from HSIDIV3 (HSI144/3 = 48 MHz) via
+	 * CK48_SEL(2).  DM=PA11, DP=PA12 (fixed analog function, see pinctrl
+	 * DTSI).
+	 *
+	 * Driven by Zephyr's standard UDC driver (udc_stm32.c). The upstream
+	 * driver only gained STM32C5 HAL2 support after the 4.4.0 release
+	 * (Zephyr PR #105957), so platform-seeedboards carries a patched copy
+	 * of udc_stm32.c under zephyr/overrides/ that the builder applies
+	 * onto the framework-zephyr package at build time.
+	 */
+	usb: usb@40016000 {
+		compatible = "st,stm32-usb";
+		reg = <0x40016000 0x400>;
+		interrupt-parent = <&nvic>;
+		interrupts = <62 0>;
+		interrupt-names = "usb";
+		num-bidir-endpoints = <8>;
+		ram-size = <2048>;
+		maximum-speed = "full-speed";
+		pinctrl-0 = <&usb_dm_pa11 &usb_dp_pa12>;
+		pinctrl-names = "default";
+		clocks = <&rcc STM32_CLOCK(APB2, 24)>,
+			 <&rcc STM32_SRC_CK48 CK48_SEL(2)>;
+		status = "okay";
+	};
 };
 
 &clk_hse {
@@ -201,3 +230,16 @@
 
 /* XIAO connector CAN alias (must be after fdcan1 definition above) */
 xiao_can: &fdcan1 {};
+
+/* USB device controller alias (standard Zephyr UDC) */
+zephyr_udc0: &usb {};
+
+/* CDC ACM UART: host-facing virtual serial port. The 1200-bps UF2 trigger
+ * (uf2_dfu_reset module) listens for SET_LINE_CODING on this interface.
+ */
+&zephyr_udc0 {
+	cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "Zephyr USB CDC-ACM";
+	};
+};
