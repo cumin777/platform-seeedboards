@@ -1,0 +1,31 @@
+# Line-ending policy for the whole repository.
+#
+# `* text=auto eol=lf` tells Git: treat every file as text by default,
+# store LF in the repository, and check out LF on every OS (no CRLF
+# conversion). This keeps line endings identical across Windows/Linux/macOS
+# contributors, so `git status` no longer lights up whole files just because
+# an editor or `core.autocrlf` flipped CR/LF.
+#
+# See the CRLF explainer in the commit that added this file.
+* text=auto eol=lf
+
+# Binary files — Git must never touch their bytes (no line-ending / diff).
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.bmp  binary
+*.ico  binary
+*.icns binary
+*.pdf  binary
+*.zip  binary
+*.gz   binary
+*.tar  binary
+*.bin  binary
+*.hex  binary
+*.elf  binary
+*.uf2  binary
+*.db   binary
+*.dtb  binary
+*.lib  binary
+*.a    binary
