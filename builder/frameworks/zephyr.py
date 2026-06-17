@@ -262,6 +262,159 @@ def _preinstall_west_deps(framework_dir, platform_name_hint):
     print("Pre-install complete.")
 
 
+def _apply_framework_patches(framework_dir):
+    """Apply surgical, idempotent patches to the Zephyr framework package modules.
+
+    The published framework-zephyr package ships upstream module files that need
+    small fixes for this platform. Patching here (in the repo, distributed to all
+    users) — rather than editing the installed package in place — means every
+    install gets the fixes automatically and they survive package reinstalls.
+
+    All patches are idempotent: guarded on a patched marker, so they run once.
+
+    Patches:
+      1. modules/cmsis-nn/CMakeLists.txt — LSTM glob *_s16.c -> *.c and add a
+         FullyConnected *_s8_s64.c glob. Without these the CMSIS-NN s8 LSTM
+         kernel (arm_lstm_unidirectional_s8) and arm_vector_sum_s8_s64 are never
+         compiled, breaking the link of any CMSIS-NN + LSTM sample.
+      2. modules/tflite-micro/CMakeLists.txt — add the Signal library spectral
+         frontend kernels (signal/micro/kernels) + their signal/src DSP impls.
+         The upstream module only compiles rfft/window/kissfft; micro_speech
+         needs the full frontend (energy/filter_bank/fft_auto_scale/pcan/...).
+      3. _pio/modules/sdk-edge-ai/cmake/version.cmake — replace the static
+         "unknown" commit stub with a dynamic git short-hash so the runtime
+         banner reads e.g. v2.1.0-<commit> instead of v2.1.0-unknown.
+    """
+    P = os.path.join
+
+    def _read(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def _write(path, content):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    # ---- 1. cmsis-nn LSTM / FullyConnected glob fix ----
+    cmsis_cmake = P(framework_dir, "modules", "cmsis-nn", "CMakeLists.txt")
+    if os.path.isfile(cmsis_cmake):
+        c = _read(cmsis_cmake)
+        changed = False
+        if "Source/LSTMFunctions/*.c\"" not in c and \
+                "Source/LSTMFunctions/*_s16.c\"" in c:
+            c = c.replace("Source/LSTMFunctions/*_s16.c\"",
+                          "Source/LSTMFunctions/*.c\"", 1)
+            changed = True
+            print("  framework patch [cmsis-nn/LSTM glob]: applied")
+        if "FullyConnectedFunctions/*_s8_s64.c" not in c:
+            fc_old = ('    file(GLOB SRC_S16 "${CMSIS_NN_DIR}/Source/'
+                      'FullyConnectedFunctions/*_s16*.c")\n'
+                      '    zephyr_library_sources(${SRC_S4} ${SRC_S8} '
+                      '${SRC_S16})')
+            fc_new = ('    file(GLOB SRC_S16 "${CMSIS_NN_DIR}/Source/'
+                      'FullyConnectedFunctions/*_s16*.c")\n'
+                      '    file(GLOB SRC_S64 "${CMSIS_NN_DIR}/Source/'
+                      'FullyConnectedFunctions/*_s8_s64.c")\n'
+                      '    zephyr_library_sources(${SRC_S4} ${SRC_S8} '
+                      '${SRC_S16} ${SRC_S64})')
+            if fc_old in c:
+                c = c.replace(fc_old, fc_new, 1)
+                changed = True
+                print("  framework patch [cmsis-nn/FC s8_s64 glob]: applied")
+        if changed:
+            _write(cmsis_cmake, c)
+
+    # ---- 2. tflite-micro Signal frontend kernels + DSP impls ----
+    tflm_cmake = P(framework_dir, "modules", "tflite-micro", "CMakeLists.txt")
+    if os.path.isfile(tflm_cmake):
+        c = _read(tflm_cmake)
+        changed = False
+        T = "${TENSORFLOW_LITE_MICRO_DIR}/signal"
+        mk_frontend = [
+            "fft_auto_scale_kernel.cc", "fft_auto_scale_common.cc",
+            "energy.cc", "energy_flexbuffers_generated_data.cc",
+            "filter_bank.cc", "filter_bank_flexbuffers_generated_data.cc",
+            "filter_bank_square_root.cc", "filter_bank_square_root_common.cc",
+            "filter_bank_spectral_subtraction.cc",
+            "filter_bank_spectral_subtraction_flexbuffers_generated_data.cc",
+            "pcan.cc", "pcan_flexbuffers_generated_data.cc",
+            "filter_bank_log.cc", "filter_bank_log_flexbuffers_generated_data.cc",
+        ]
+        src_impls = [
+            "fft_auto_scale.cc", "energy.cc", "filter_bank.cc",
+            "filter_bank_square_root.cc", "filter_bank_spectral_subtraction.cc",
+            "filter_bank_log.cc", "pcan_argc_fixed.cc", "log.cc",
+            "msb_32.cc", "msb_64.cc", "square_root_32.cc", "square_root_64.cc",
+            "max_abs.cc", "circular_buffer.cc",
+        ]
+        # micro/kernels frontend: insert between window_flexbuffers and rfft_float
+        if "%s/micro/kernels/fft_auto_scale_kernel.cc" % T not in c:
+            anchor = ("    %s/micro/kernels/window_flexbuffers_generated_data.cc\n"
+                      "    %s/src/rfft_float.cc" % (T, T))
+            insertion = ("    %s/micro/kernels/window_flexbuffers_generated_data.cc\n"
+                         "%s\n    %s/src/rfft_float.cc" % (
+                             T,
+                             "\n".join("    %s/micro/kernels/%s" % (T, n)
+                                       for n in mk_frontend),
+                             T))
+            if anchor in c:
+                c = c.replace(anchor, insertion, 1)
+                changed = True
+                print("  framework patch [tflite-micro/signal micro-kernels]: applied")
+        # signal/src DSP impls: insert between kiss_fft_int32 and error_reporter
+        if "%s/src/fft_auto_scale.cc" % T not in c:
+            anchor = ("    %s/src/kiss_fft_wrappers/kiss_fft_int32.cc\n"
+                      "    %s/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc"
+                      % (T, T))
+            insertion = ("    %s/src/kiss_fft_wrappers/kiss_fft_int32.cc\n"
+                         "%s\n    %s/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc"
+                         % (T,
+                            "\n".join("    %s/src/%s" % (T, n) for n in src_impls),
+                            T))
+            if anchor in c:
+                c = c.replace(anchor, insertion, 1)
+                changed = True
+                print("  framework patch [tflite-micro/signal src impls]: applied")
+        if changed:
+            _write(tflm_cmake, c)
+
+    # ---- 3. sdk-edge-ai version.cmake commit string ----
+    ea_vcmake = P(framework_dir, "_pio", "modules", "sdk-edge-ai", "cmake",
+                  "version.cmake")
+    if os.path.isfile(ea_vcmake):
+        c = _read(ea_vcmake)
+        if "rev-parse --short HEAD" not in c and \
+                'EDGE_AI_COMMIT_STRING \\"unknown\\"' in c:
+            stub_old = (
+                '# Stub edge_ai_commit.h (real one needs sdk-nrf/gen_commit_h.cmake)\n'
+                'file(WRITE ${_gen_dir}/edge_ai_commit.h\n'
+                '  "#define EDGE_AI_COMMIT_STRING \\"unknown\\"\\n")')
+            stub_new = (
+                '# Generate edge_ai_commit.h from the module git commit (PIO\n'
+                '# adaptation; upstream uses sdk-nrf/gen_commit_h.cmake which PIO\n'
+                '# does not ship, so derive the short hash directly).\n'
+                'find_package(Git QUIET)\n'
+                'set(_edge_ai_commit "unknown")\n'
+                'if(GIT_FOUND)\n'
+                '  execute_process(\n'
+                '    COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD\n'
+                '    WORKING_DIRECTORY ${_edge_ai_dir}\n'
+                '    OUTPUT_VARIABLE _edge_ai_git_commit\n'
+                '    OUTPUT_STRIP_TRAILING_WHITESPACE\n'
+                '    ERROR_QUIET\n'
+                '    RESULT_VARIABLE _commit_rc)\n'
+                '  if(_commit_rc EQUAL 0 AND NOT "${_edge_ai_git_commit}" STREQUAL "")\n'
+                '    set(_edge_ai_commit "${_edge_ai_git_commit}")\n'
+                '  endif()\n'
+                'endif()\n'
+                'file(WRITE ${_gen_dir}/edge_ai_commit.h\n'
+                '  "#define EDGE_AI_COMMIT_STRING \\"${_edge_ai_commit}\\"\\n")')
+            if stub_old in c:
+                c = c.replace(stub_old, stub_new, 1)
+                _write(ea_vcmake, c)
+                print("  framework patch [sdk-edge-ai/version commit]: applied")
+
+
 # Inject sdk-edge-ai module for NPU boards so that both the preinstall
 # step and platformio-build.py can discover it via west.yml.
 _inject_edge_ai_module(framework_dir, board_name, env)
@@ -270,6 +423,12 @@ _inject_edge_ai_module(framework_dir, board_name, env)
 # This ensures they exist when install-deps.py checks, avoiding its
 # destructive clean_up() on any single failure.
 _preinstall_west_deps(framework_dir, env.subst("$PIOPLATFORM"))
+
+# Apply idempotent framework-package patches (cmsis-nn glob, tflite-micro Signal
+# kernels, sdk-edge-ai version). Modules ship with the package so they are
+# already present here; patching before platformio-build.py ensures CMake sees
+# the fixed sources. Safe to re-run every build (guarded).
+_apply_framework_patches(framework_dir)
 
 SConscript(
     join(framework_dir, "scripts", "platformio", "platformio-build.py"), exports="env")
