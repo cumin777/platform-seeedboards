@@ -4,6 +4,9 @@
  *
  * Blinky example for XIAO STM32C5 with TinyUF2 bootloader support.
  * Based on Zephyr samples/basic/blinky.
+ *
+ * The 1200-bps UF2 bootloader trigger is armed automatically by the
+ * board support package — no code changes needed in this example.
  */
 
 #include <zephyr/kernel.h>

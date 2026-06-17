@@ -1,0 +1,18 @@
+/ {
+	gpio_demo {
+		compatible = "gpio-leds";
+		demo_out: demo_out {
+			gpios = <&gpioa 0 GPIO_ACTIVE_HIGH>;
+		};
+		demo_in: demo_in {
+			gpios = <&gpioa 1 GPIO_ACTIVE_HIGH>;
+		};
+	};
+};
+
+/ {
+	aliases {
+		gpioout = &demo_out;
+		gpioin  = &demo_in;
+	};
+};
