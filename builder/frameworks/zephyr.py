@@ -446,7 +446,6 @@ def _inject_tflite_micro_module(framework_dir, board_name_str):
         return
     projects.append({
         "name": "tflite-micro",
-        "url": "https://github.com/zephyrproject-rtos/tflite-micro",
         "revision": "8d404de73acf7687831e16d88e86e4f73cfddf8e",
         "path": "modules/lib/tflite-micro",
     })
