@@ -325,8 +325,13 @@ def _apply_framework_patches(framework_dir):
             _write(cmsis_cmake, c)
 
     # ---- 2. tflite-micro Signal frontend kernels + DSP impls ----
-    tflm_cmake = P(framework_dir, "modules", "tflite-micro", "CMakeLists.txt")
-    if os.path.isfile(tflm_cmake):
+    # Zephyr builds the CLONED module's zephyr/CMakeLists.txt (the framework
+    # modules/tflite-micro/CMakeLists.txt is only a static reference sourced
+    # under `if 0`). Apply the Signal-kernel patch to BOTH so it takes effect
+    # whichever is used. Idempotent (guarded).
+    def _patch_tflm(tflm_cmake):
+        if not os.path.isfile(tflm_cmake):
+            return
         c = _read(tflm_cmake)
         changed = False
         T = "${TENSORFLOW_LITE_MICRO_DIR}/signal"
@@ -378,6 +383,10 @@ def _apply_framework_patches(framework_dir):
         if changed:
             _write(tflm_cmake, c)
 
+    _patch_tflm(P(framework_dir, "modules", "tflite-micro", "CMakeLists.txt"))
+    _patch_tflm(P(framework_dir, "_pio", "modules", "lib", "tflite-micro",
+                  "zephyr", "CMakeLists.txt"))
+
     # ---- 3. sdk-edge-ai version.cmake commit string ----
     ea_vcmake = P(framework_dir, "_pio", "modules", "sdk-edge-ai", "cmake",
                   "version.cmake")
@@ -413,6 +422,39 @@ def _apply_framework_patches(framework_dir):
                 c = c.replace(stub_old, stub_new, 1)
                 _write(ea_vcmake, c)
                 print("  framework patch [sdk-edge-ai/version commit]: applied")
+
+
+def _inject_tflite_micro_module(framework_dir, board_name_str):
+    """Inject tflite-micro into the framework west.yml for NPU boards.
+
+    The published framework-zephyr west.yml does NOT list tflite-micro, so
+    install-deps never fetches it and ZEPHYR_MODULES omits it — TFLM builds
+    then fail with "tensorflow/lite/micro/micro_log.h: No such file". The
+    tflite-micro Zephyr module (zephyrproject-rtos fork, zephyr-v4.1.0) is
+    pinned to the commit verified with the 8 TFLM samples. Idempotent.
+    """
+    if not board_name_str or "-npu" not in board_name_str:
+        return
+    west_yml = join(framework_dir, "west.yml")
+    if not os.path.isfile(west_yml):
+        return
+    with open(west_yml, "r", encoding="utf-8") as f:
+        west_data = yaml.safe_load(f)
+    manifest = west_data.get("manifest", {})
+    projects = manifest.get("projects", [])
+    if any(p.get("name") == "tflite-micro" for p in projects):
+        return
+    projects.append({
+        "name": "tflite-micro",
+        "url": "https://github.com/zephyrproject-rtos/tflite-micro",
+        "revision": "8d404de73acf7687831e16d88e86e4f73cfddf8e",
+        "path": "modules/lib/tflite-micro",
+    })
+    manifest["projects"] = projects
+    west_data["manifest"] = manifest
+    with open(west_yml, "w", encoding="utf-8") as f:
+        yaml.dump(west_data, f, default_flow_style=False, allow_unicode=True)
+    print("Injected tflite-micro into west.yml (zephyrproject-rtos @8d404de)")
 
 
 def _cleanup_stray_modules(framework_dir, env_obj):
@@ -471,6 +513,10 @@ def _cleanup_stray_modules(framework_dir, env_obj):
 # Inject sdk-edge-ai module for NPU boards so that both the preinstall
 # step and platformio-build.py can discover it via west.yml.
 _inject_edge_ai_module(framework_dir, board_name, env)
+
+# Inject tflite-micro (TFLM source) for NPU boards — the published framework
+# west.yml omits it, so it must be added here or TFLM builds can't find headers.
+_inject_tflite_micro_module(framework_dir, board_name)
 
 # Strip stray module entries (ncs-compat / sdk-edge-ai) that cannot be cloned,
 # to prevent install-deps' destructive clean_up from wiping all modules.
