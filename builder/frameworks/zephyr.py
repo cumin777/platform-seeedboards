@@ -415,9 +415,66 @@ def _apply_framework_patches(framework_dir):
                 print("  framework patch [sdk-edge-ai/version commit]: applied")
 
 
+def _cleanup_stray_modules(framework_dir, env_obj):
+    """Remove stray module entries from the framework west.yml that cannot be
+    satisfied on this platform, so install-deps.py does not try to clone them
+    (a failed clone triggers install-deps' destructive clean_up that wipes ALL
+    modules — the root cause of "TENSORFLOW_LITE_MICRO ... depends on 0").
+
+    - ncs-compat: a local-only module (not a public git repo). It is provided
+      by copying platform/zephyr/modules/ncs-compat/ on branches that support
+      it; otherwise any leftover west.yml entry must be stripped, else
+      install-deps fails cloning github.com/zephyrproject-rtos/ncs-compat.git
+      (Repository not found).
+    - sdk-edge-ai: when board_build.edge_ai is not requested, strip any leftover
+      entry so install-deps does not clone the (large) SDK.
+    Entries are only stripped when their on-disk module dir is absent (so a
+    locally-provided module is kept and install-deps skips cloning it).
+    """
+    west_yml = join(framework_dir, "west.yml")
+    if not os.path.isfile(west_yml):
+        return
+    with open(west_yml, "r", encoding="utf-8") as f:
+        west_data = yaml.safe_load(f)
+    manifest = west_data.get("manifest", {})
+    projects = manifest.get("projects", [])
+
+    try:
+        use_edge_ai = str(env_obj.GetProjectOption(
+            "board_build.edge_ai", "false")).lower() in ("true", "yes", "1")
+    except Exception:
+        use_edge_ai = False
+
+    def _present(rel):
+        d = join(framework_dir, "_pio", "modules", rel)
+        return os.path.isdir(d) and bool(os.listdir(d))
+
+    def _should_remove(p):
+        name = p.get("name", "")
+        if name == "ncs-compat" and not _present("ncs-compat"):
+            return True
+        if name == "sdk-edge-ai" and not use_edge_ai and not _present("sdk-edge-ai"):
+            return True
+        return False
+
+    new_projects = [p for p in projects if not _should_remove(p)]
+    removed = len(projects) - len(new_projects)
+    if removed:
+        manifest["projects"] = new_projects
+        west_data["manifest"] = manifest
+        with open(west_yml, "w", encoding="utf-8") as f:
+            yaml.dump(west_data, f, default_flow_style=False, allow_unicode=True)
+        print("Stripped %d stray module(s) from west.yml "
+              "(ncs-compat/sdk-edge-ai not locally provided)" % removed)
+
+
 # Inject sdk-edge-ai module for NPU boards so that both the preinstall
 # step and platformio-build.py can discover it via west.yml.
 _inject_edge_ai_module(framework_dir, board_name, env)
+
+# Strip stray module entries (ncs-compat / sdk-edge-ai) that cannot be cloned,
+# to prevent install-deps' destructive clean_up from wiping all modules.
+_cleanup_stray_modules(framework_dir, env)
 
 # Pre-install west dependencies with retry before platformio-build.py runs
 # This ensures they exist when install-deps.py checks, avoiding its
