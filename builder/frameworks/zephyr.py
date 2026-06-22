@@ -442,8 +442,22 @@ def _inject_tflite_micro_module(framework_dir, board_name_str):
         west_data = yaml.safe_load(f)
     manifest = west_data.get("manifest", {})
     projects = manifest.get("projects", [])
-    if any(p.get("name") == "tflite-micro" for p in projects):
+
+    # Self-heal: a previously-injected entry may carry a "url" field, which
+    # trips install-deps' prepare_package_url() bug (KeyError 'url-base').
+    # Strip the url field so it resolves via the default remote.
+    existing = [p for p in projects if p.get("name") == "tflite-micro"]
+    if existing:
+        entry = existing[0]
+        if "url" in entry:
+            entry.pop("url", None)
+            manifest["projects"] = projects
+            west_data["manifest"] = manifest
+            with open(west_yml, "w", encoding="utf-8") as f:
+                yaml.dump(west_data, f, default_flow_style=False, allow_unicode=True)
+            print("Fixed tflite-micro west.yml entry (removed broken 'url' field)")
         return
+
     projects.append({
         "name": "tflite-micro",
         "revision": "8d404de73acf7687831e16d88e86e4f73cfddf8e",
