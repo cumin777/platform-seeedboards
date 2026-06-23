@@ -387,6 +387,10 @@ def _apply_framework_patches(framework_dir):
     _patch_tflm(P(framework_dir, "_pio", "modules", "lib", "tflite-micro",
                   "zephyr", "CMakeLists.txt"))
 
+    # Move one file from each same-basename collision pair into a separate
+    # library target so Zephyr's module build gives them a distinct object dir.
+    _patch_tflm_dedup(framework_dir, _read, _write, P)
+
     # ---- 3. sdk-edge-ai version.cmake commit string ----
     ea_vcmake = P(framework_dir, "_pio", "modules", "sdk-edge-ai", "cmake",
                   "version.cmake")
@@ -422,6 +426,211 @@ def _apply_framework_patches(framework_dir):
                 c = c.replace(stub_old, stub_new, 1)
                 _write(ea_vcmake, c)
                 print("  framework patch [sdk-edge-ai/version commit]: applied")
+
+    # ---- 4. install-deps.py: retry clone + skip-on-fail (no destructive clean_up) ----
+    # framework-zephyr's install-deps.py aborts and `clean_up()` wipes ALL
+    # already-cloned modules the moment a single project fails (e.g. a
+    # transient GnuTLS recv error on the large openthread repo) — forcing a
+    # full re-clone. Patch it to (a) retry each clone 3x, (b) skip a
+    # persistently-failing module and continue, (c) never clean_up(). Re-runs
+    # then retry only the missing module (already-installed dirs are skipped
+    # by install-deps' own isdir() check). Idempotent (marker-guarded).
+    _patch_install_deps(framework_dir, _read, _write, P)
+
+
+def _patch_tflm_dedup(framework_dir, _read, _write, P):
+    """Move one file from each same-basename collision pair out of the main
+    tflite-micro library into a separate `zephyr_library_named(tflm_dedup)`
+    target. Zephyr's module build names object files as <module>/<basename>.o
+    for out-of-tree sources, so pairs like signal/micro/kernels/window.cc and
+    signal/src/window.cc both flatten to modules__tflite-micro/.../window.cc.o
+    and CMake aborts with "Multiple ways to build the same target". A separate
+    library target gets its own object directory, so the collision disappears.
+    Idempotent (guard: tflm_dedup marker). The CMSIS-NN include/define are
+    replicated onto the dedup library so the moved micro/kernels/*.cc files
+    compile identically to how they would in the main library.
+    """
+    tflm_cmake = P(framework_dir, "modules", "tflite-micro", "CMakeLists.txt")
+    if not os.path.isfile(tflm_cmake):
+        return
+    c = _read(tflm_cmake)
+    if "zephyr_library_named(tflm_dedup)" in c:
+        return  # already patched
+
+    # One source from each same-basename pair (the "second" of each). Their
+    # basenames are mutually distinct, so the dedup library has no internal
+    # collision; removing them leaves the main library collision-free too.
+    move = [
+        "${TENSORFLOW_LITE_MICRO_DIR}/signal/src/window.cc",
+        "${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/lite/core/c/common.cc",
+        "${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/lite/micro/kernels/comparisons.cc",
+        "${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/lite/micro/kernels/kernel_util.cc",
+        "${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc",
+        "${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/lite/core/api/tensor_utils.cc",
+    ]
+    for m in move:
+        line = "    %s\n" % m
+        if line not in c:
+            print("  framework patch [tflite-micro/dedup]: structure changed, "
+                  "skipped (%s)" % m)
+            return
+
+    for m in move:
+        c = c.replace("    %s\n" % m, "", 1)
+
+    dedup = (
+        "\n"
+        "  # PIO: dedup library for same-basename sources. Zephyr's module build\n"
+        "  # flattens same-basename sources to <module>/<basename>.o, so pairs\n"
+        "  # like signal/micro/kernels/window.cc + signal/src/window.cc collide.\n"
+        "  # Moving one of each pair into a separate library target gives them a\n"
+        "  # distinct object directory. Re-applied idempotently by the platform.\n"
+        "  zephyr_library_named(tflm_dedup)\n"
+        "  if(CONFIG_TENSORFLOW_LITE_MICRO_CMSIS_NN_KERNELS)\n"
+        "    zephyr_library_include_directories(${tflm_cmsis_nn_glue_path})\n"
+        "    zephyr_library_compile_definitions(CMSIS_NN)\n"
+        "  endif()\n"
+        "  zephyr_library_sources(\n"
+        + "".join("    %s\n" % m for m in move)
+        + "  )\n"
+    )
+    anchor = "\nendif()\n"
+    if anchor not in c:
+        print("  framework patch [tflite-micro/dedup]: endif() anchor missing, skipped")
+        return
+    # Only the outer (column-0) endif() matches "\nendif()\n"; indented inner
+    # endif()s are "\n  endif()\n" and do not match. Replace the first match.
+    c = c.replace(anchor, dedup + "endif()\n", 1)
+    _write(tflm_cmake, c)
+    print("  framework patch [tflite-micro/dedup]: applied")
+
+
+def _patch_install_deps(framework_dir, _read, _write, P):
+    installd_deps = P(framework_dir, "scripts", "platformio", "install-deps.py")
+    if not os.path.isfile(installd_deps):
+        return
+    try:
+        c = _read(installd_deps)
+    except Exception as e:
+        print("Warning: cannot read install-deps.py for patching: %s" % e)
+        return
+
+    changed = False
+
+    # Hunk 1 — clone_repository: retry the git clone 3x (clear half-empty dst
+    # between attempts). Handles transient GnuTLS / early-EOF failures.
+    m1 = "# PIO: retry clone on transient"
+    if m1 not in c:
+        old1 = (
+            '    if not run_cmd(args + [remote_url, dst_dir]):\n'
+            '        sys.stderr.write(f"Error: Failed to clone project from `{remote_url}`!\\n")\n'
+            '        return False\n'
+        )
+        new1 = (
+            '    # PIO: retry clone on transient network failures (e.g. GnuTLS recv error)\n'
+            '    import time as _pio_time\n'
+            '    _clone_ok = False\n'
+            '    for _attempt in range(1, 4):\n'
+            '        if run_cmd(args + [remote_url, dst_dir]):\n'
+            '            _clone_ok = True\n'
+            '            break\n'
+            '        shutil.rmtree(dst_dir, ignore_errors=True)\n'
+            '        sys.stderr.write(\n'
+            '            f"Warning: clone attempt {_attempt}/3 failed for `{remote_url}`\\n")\n'
+            '        if _attempt < 3:\n'
+            '            _pio_time.sleep(5)\n'
+            '    if not _clone_ok:\n'
+            '        sys.stderr.write(f"Error: Failed to clone project from `{remote_url}`!\\n")\n'
+            '        return False\n'
+        )
+        if old1 in c:
+            c = c.replace(old1, new1, 1)
+            changed = True
+        else:
+            print("  framework patch [install-deps/Hunk1]: structure changed, skipped")
+
+    # Hunk 2 — process_bundled_projects: skip-and-continue instead of aborting
+    # all modules. Three sub-replacements applied atomically (snapshot+verify)
+    # so a partially-matching file is left untouched rather than half-patched.
+    m2 = "failed_deps.append(project_name)"
+    if m2 not in c:
+        old2a = (
+            '        if not install_from_remote(\n'
+            '            project_config, package_path, remotes, default_remote\n'
+            '        ):\n'
+            '            sys.stderr.write(f"Failed to install the `{project_name}` project!\\n")\n'
+            '            return False, result\n'
+        )
+        new2a = (
+            '        if not install_from_remote(\n'
+            '            project_config, package_path, remotes, default_remote\n'
+            '        ):\n'
+            '            # PIO: skip-and-continue; other modules are retained\n'
+            '            sys.stderr.write(\n'
+            '                f"Warning: failed to install `{project_name}`; skipping "\n'
+            '                f"(other modules retained). Re-run to retry just this one.\\n")\n'
+            '            failed_deps.append(project_name)\n'
+            '            continue\n'
+        )
+        old2b = (
+            '    ), "Missing the `projects` field in the package manifest!"\n'
+        )
+        new2b = (
+            '    ), "Missing the `projects` field in the package manifest!"\n'
+            '    failed_deps = []  # PIO: track skipped modules\n'
+        )
+        old2c = (
+            '        result[project_name] = project_config["revision"]\n'
+            '\n'
+            '    return True, result\n'
+        )
+        new2c = (
+            '        result[project_name] = project_config["revision"]\n'
+            '\n'
+            '    if failed_deps:\n'
+            '        sys.stderr.write(\n'
+            '            "Warning: skipped modules (not fatal): "\n'
+            '            + ", ".join(failed_deps) + "\\n")\n'
+            '    return True, result\n'
+        )
+        if old2a in c and old2b in c and old2c in c:
+            c = c.replace(old2a, new2a, 1).replace(old2b, new2b, 1).replace(old2c, new2c, 1)
+            changed = True
+        else:
+            print("  framework patch [install-deps/Hunk2]: structure changed, skipped")
+
+    # Hunk 3 — main: never clean_up() on failure; keep installed modules so
+    # re-runs retry only the missing ones.
+    m3 = "# PIO: never clean_up()"
+    if m3 not in c:
+        old3 = (
+            '    elif not result:\n'
+            '        # Failed to install packages\n'
+            '        clean_up(packages_folder)\n'
+            '        sys.exit(1)\n'
+            '\n'
+            '    sys.exit(0)\n'
+        )
+        new3 = (
+            '    elif not result:\n'
+            '        # PIO: never clean_up() on failure — keep installed modules\n'
+            '        # so re-runs retry only the missing ones, not re-clone all.\n'
+            '        pass\n'
+            '\n'
+            '    sys.exit(0 if result else 1)\n'
+        )
+        if old3 in c:
+            c = c.replace(old3, new3, 1)
+            changed = True
+        else:
+            print("  framework patch [install-deps/Hunk3]: structure changed, skipped")
+
+    if changed:
+        try:
+            _write(installd_deps, c)
+            print("  framework patch [install-deps/retry+skip-noclean]: applied")
+        except Exception as e:
+            print("Warning: failed to write patched install-deps.py: %s" % e)
 
 
 def _inject_tflite_micro_module(framework_dir, board_name_str):
