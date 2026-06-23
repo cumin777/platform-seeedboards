@@ -46,6 +46,12 @@ ZEPHYR_PACKAGE_BY_BOARD = {
     "seeed-xiao-nrf54lm20a": "framework-zephyr-nrf54lm20",
     "seeed-xiao-nrf54lm20b": "framework-zephyr-nrf54lm20",
 }
+NCS_EXTRA_PACKAGES_BY_BOARD = {
+    "seeed-xiao-nrf54lm20a": [
+        "framework-sdk-nrf",
+        "framework-sdk-nrfxlib",
+    ],
+}
 
 class SeeedstudioPlatform(PlatformBase):
     def __init__(self, *args, **kwargs):
@@ -61,6 +67,7 @@ class SeeedstudioPlatform(PlatformBase):
 
         board_name = variables.get("board")
         self._configure_zephyr_package_for_board(board_name, variables)
+        self._configure_ncs_packages_for_board(board_name, variables)
 
         if "esp32" in board_name:
             Architecture = "esp"
@@ -105,6 +112,15 @@ class SeeedstudioPlatform(PlatformBase):
             return
 
         self.frameworks["zephyr"]["package"] = package_name
+
+    def _configure_ncs_packages_for_board(self, board_name, variables):
+        frameworks = variables.get("pioframework", [])
+        if "zephyr" not in frameworks:
+            return
+
+        for package_name in NCS_EXTRA_PACKAGES_BY_BOARD.get(board_name, []):
+            if package_name in self.packages:
+                self.packages[package_name]["optional"] = False
 
     def get_zephyr_package_name(self, board_name=None):
         if board_name:

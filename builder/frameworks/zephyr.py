@@ -38,6 +38,7 @@ board_name = env.get("BOARD", "")
 platform = env.PioPlatform()
 framework_package_name = platform.get_zephyr_package_name(board_name)
 framework_version = None
+NCS_MODULE_BOARDS = {"seeed-xiao-nrf54lm20a"}
 
 if board_name and "nrf" in board_name:
     env.Replace(
@@ -339,6 +340,45 @@ def _patch_platformio_object_naming(framework_dir):
             fp.write(text)
 
 
+def _patch_platformio_ncs_modules(framework_dir):
+    """Allow the platform wrapper to inject extra Zephyr modules via env."""
+    build_py = join(framework_dir, "scripts", "platformio", "platformio-build.py")
+    if not os.path.isfile(build_py):
+        return
+
+    with open(build_py, "r", encoding="utf-8") as fp:
+        text = fp.read()
+
+    marker = '    cmake_cmd.extend(["-D", "ZEPHYR_MODULES=" + ";".join(modules)])\n'
+    replacement = (
+        '    extra_modules = env.get("PIO_NCS_MODULES", "")\n'
+        '    if extra_modules:\n'
+        '        modules.extend(\n'
+        '            [m for m in extra_modules.split(";") if m and m not in modules]\n'
+        '        )\n'
+        '    cmake_cmd.extend(["-D", "ZEPHYR_MODULES=" + ";".join(modules)])\n'
+    )
+
+    if marker in text and replacement not in text:
+        text = text.replace(marker, replacement)
+        with open(build_py, "w", encoding="utf-8") as fp:
+            fp.write(text)
+
+
+def _configure_ncs_modules(board_name):
+    if board_name not in NCS_MODULE_BOARDS:
+        return
+
+    modules = []
+    for package_name in ("framework-sdk-nrf", "framework-sdk-nrfxlib"):
+        package_dir = platform.get_package_dir(package_name)
+        if package_dir and os.path.isdir(package_dir):
+            modules.append(package_dir.replace("\\", "/"))
+
+    if modules:
+        env.Replace(PIO_NCS_MODULES=";".join(modules))
+
+
 def _is_commit_hash(value):
     return value and re.match(r"[0-9a-f]{7,}$", value) is not None
 
@@ -448,6 +488,8 @@ _ensure_minimal_west_workspace(framework_dir)
 _preinstall_west_deps(framework_dir, env.subst("$PIOPLATFORM"))
 _patch_platformio_path_handling(framework_dir)
 _patch_platformio_object_naming(framework_dir)
+_patch_platformio_ncs_modules(framework_dir)
+_configure_ncs_modules(board_name)
 
 SConscript(
     join(framework_dir, "scripts", "platformio", "platformio-build.py"), exports="env")

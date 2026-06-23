@@ -259,6 +259,18 @@
         "3.40400.260428"
       ]
     },
+    "framework-sdk-nrf": {
+      "type": "framework",
+      "optional": true,
+      "owner": "seeedstudio",
+      "version": "https://github.com/nrfconnect/sdk-nrf.git#v3.3.0"
+    },
+    "framework-sdk-nrfxlib": {
+      "type": "framework",
+      "optional": true,
+      "owner": "seeedstudio",
+      "version": "https://github.com/nrfconnect/sdk-nrfxlib.git#v3.3.0"
+    },
     "tool-adafruit-nrfutil": {
       "owner": "platformio",
       "optional": true,
