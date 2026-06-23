@@ -369,13 +369,12 @@ def _apply_framework_patches(framework_dir):
         # signal/src DSP impls: insert between kiss_fft_int32 and error_reporter
         if "%s/src/fft_auto_scale.cc" % T not in c:
             anchor = ("    %s/src/kiss_fft_wrappers/kiss_fft_int32.cc\n"
-                      "    %s/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc"
-                      % (T, T))
+                      "    ${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc"
+                      % T)
             insertion = ("    %s/src/kiss_fft_wrappers/kiss_fft_int32.cc\n"
-                         "%s\n    %s/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc"
+                         "%s\n    ${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc"
                          % (T,
-                            "\n".join("    %s/src/%s" % (T, n) for n in src_impls),
-                            T))
+                            "\n".join("    %s/src/%s" % (T, n) for n in src_impls)))
             if anchor in c:
                 c = c.replace(anchor, insertion, 1)
                 changed = True
@@ -439,70 +438,76 @@ def _apply_framework_patches(framework_dir):
 
 
 def _patch_tflm_dedup(framework_dir, _read, _write, P):
-    """Move one file from each same-basename collision pair out of the main
-    tflite-micro library into a separate `zephyr_library_named(tflm_dedup)`
-    target. Zephyr's module build names object files as <module>/<basename>.o
-    for out-of-tree sources, so pairs like signal/micro/kernels/window.cc and
-    signal/src/window.cc both flatten to modules__tflite-micro/.../window.cc.o
-    and CMake aborts with "Multiple ways to build the same target". A separate
-    library target gets its own object directory, so the collision disappears.
-    Idempotent (guard: tflm_dedup marker). The CMSIS-NN include/define are
-    replicated onto the dedup library so the moved micro/kernels/*.cc files
-    compile identically to how they would in the main library.
+    """Dynamically dedup same-basename .cc sources in the tflite-micro
+    CMakeLists. Zephyr's module build names out-of-tree object files as
+    <module>/<basename>.o, so two sources with the same basename in different
+    subdirs (e.g. signal/micro/kernels/window.cc + signal/src/window.cc, or
+    the micro/kernels + signal/src energy/filter_bank/... pairs the Signal
+    patch introduces) collide and CMake aborts with "Multiple ways to build
+    the same target".
+
+    This rebuilds the whole main zephyr_library_sources(...) + dedup region
+    each run: every .cc source with a unique basename stays in the main
+    library; for each duplicated basename, the first occurrence stays in the
+    main library and the rest move into a separate zephyr_library_named(
+    tflm_dedup) target (CMSIS-NN include/define replicated) whose object
+    directory differs. Deterministic, idempotent and self-healing — when the
+    signal/src DSP impls are added later they are picked up automatically.
     """
+    import re
     tflm_cmake = P(framework_dir, "modules", "tflite-micro", "CMakeLists.txt")
     if not os.path.isfile(tflm_cmake):
         return
     c = _read(tflm_cmake)
-    if "zephyr_library_named(tflm_dedup)" in c:
-        return  # already patched
 
-    # One source from each same-basename pair (the "second" of each). Their
-    # basenames are mutually distinct, so the dedup library has no internal
-    # collision; removing them leaves the main library collision-free too.
-    move = [
-        "${TENSORFLOW_LITE_MICRO_DIR}/signal/src/window.cc",
-        "${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/lite/core/c/common.cc",
-        "${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/lite/micro/kernels/comparisons.cc",
-        "${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/lite/micro/kernels/kernel_util.cc",
-        "${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc",
-        "${TENSORFLOW_LITE_MICRO_DIR}/tensorflow/lite/core/api/tensor_utils.cc",
-    ]
-    for m in move:
-        line = "    %s\n" % m
-        if line not in c:
-            print("  framework patch [tflite-micro/dedup]: structure changed, "
-                  "skipped (%s)" % m)
-            return
-
-    for m in move:
-        c = c.replace("    %s\n" % m, "", 1)
-
-    dedup = (
-        "\n"
-        "  # PIO: dedup library for same-basename sources. Zephyr's module build\n"
-        "  # flattens same-basename sources to <module>/<basename>.o, so pairs\n"
-        "  # like signal/micro/kernels/window.cc + signal/src/window.cc collide.\n"
-        "  # Moving one of each pair into a separate library target gives them a\n"
-        "  # distinct object directory. Re-applied idempotently by the platform.\n"
-        "  zephyr_library_named(tflm_dedup)\n"
-        "  if(CONFIG_TENSORFLOW_LITE_MICRO_CMSIS_NN_KERNELS)\n"
-        "    zephyr_library_include_directories(${tflm_cmsis_nn_glue_path})\n"
-        "    zephyr_library_compile_definitions(CMSIS_NN)\n"
-        "  endif()\n"
-        "  zephyr_library_sources(\n"
-        + "".join("    %s\n" % m for m in move)
-        + "  )\n"
-    )
-    anchor = "\nendif()\n"
-    if anchor not in c:
-        print("  framework patch [tflite-micro/dedup]: endif() anchor missing, skipped")
+    # Region spans the main zephyr_library_sources(...) block and any existing
+    # dedup block, up to the outer (column-0) endif().
+    m = re.search(r'  zephyr_library_sources\(', c)
+    n = re.search(r'\nendif\(\)\n', c)
+    if not m or not n or m.start() >= n.start():
         return
-    # Only the outer (column-0) endif() matches "\nendif()\n"; indented inner
-    # endif()s are "\n  endif()\n" and do not match. Replace the first match.
-    c = c.replace(anchor, dedup + "endif()\n", 1)
+    region = c[m.start():n.start()]
+
+    src_re = re.compile(r'^    (\$\{TENSORFLOW_LITE_MICRO_DIR\}/\S+\.cc)$', re.M)
+    all_paths = src_re.findall(region)
+
+    seen = set()
+    main_srcs, dedup_srcs = [], []
+    for path in all_paths:
+        base = path.rsplit('/', 1)[-1]
+        if base in seen:
+            dedup_srcs.append(path)
+        else:
+            seen.add(base)
+            main_srcs.append(path)
+
+    main_block = ("  zephyr_library_sources(\n"
+                  + "".join("    %s\n" % p for p in main_srcs)
+                  + "  )\n")
+    if dedup_srcs:
+        dedup_block = (
+            "\n"
+            "  # PIO: dedup library for same-basename sources. Zephyr's module build\n"
+            "  # flattens out-of-tree sources to <module>/<basename>.o, so pairs like\n"
+            "  # signal/micro/kernels/window.cc + signal/src/window.cc collide. One of\n"
+            "  # each duplicate basename is moved here into a separate library target\n"
+            "  # whose object directory differs. Regenerated idempotently each build.\n"
+            "  zephyr_library_named(tflm_dedup)\n"
+            "  if(CONFIG_TENSORFLOW_LITE_MICRO_CMSIS_NN_KERNELS)\n"
+            "    zephyr_library_include_directories(${tflm_cmsis_nn_glue_path})\n"
+            "    zephyr_library_compile_definitions(CMSIS_NN)\n"
+            "  endif()\n"
+            "  zephyr_library_sources(\n"
+            + "".join("    %s\n" % p for p in dedup_srcs)
+            + "  )\n"
+        )
+    else:
+        dedup_block = ""
+
+    c = c[:m.start()] + main_block + dedup_block + c[n.start():]
     _write(tflm_cmake, c)
-    print("  framework patch [tflite-micro/dedup]: applied")
+    print("  framework patch [tflite-micro/dedup]: %d main, %d dedup" % (
+        len(main_srcs), len(dedup_srcs)))
 
 
 def _patch_install_deps(framework_dir, _read, _write, P):
