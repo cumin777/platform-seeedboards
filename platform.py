@@ -105,9 +105,6 @@ class SeeedstudioPlatform(PlatformBase):
             return
 
         self.frameworks["zephyr"]["package"] = package_name
-        if package_name in self.packages:
-            self.packages["framework-zephyr"] = dict(self.packages[package_name])
-            self.packages["framework-zephyr"]["optional"] = False
 
     def get_zephyr_package_name(self, board_name=None):
         if board_name:
