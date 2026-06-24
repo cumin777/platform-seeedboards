@@ -1,17 +1,26 @@
+import os
 import sys
+from pathlib import Path
+
 IS_WINDOWS = sys.platform.startswith("win")
 
 def configure_nrf_default_packages(self, variables, targets):
     upload_protocol = ""
     board = variables.get("board")
     frameworks = variables.get("pioframework", [])
-    
+
     if board:
         upload_protocol = variables.get(
             "upload_protocol",
             self.board_config(board).get("upload.protocol", ""))
 
         self.packages["toolchain-gccarmnoneeabi"]["optional"] = False
+
+        # Prefer local NCS framework package: if framework-zephyr-ncs330 is
+        # manually installed in the PIO packages dir, point the version spec
+        # to its local path so PlatformIO does not try to download it from
+        # the registry (it's a local-only package).
+        _prefer_local_ncs_package(self)
         # if board in ("seeed-xiao-afruitnrf52-nrf52840", "seeed-xiao-ble-nrf52840-sense"):
         if "afruitnrf52-nrf52840" in board:
             self.frameworks["arduino"][
@@ -163,3 +172,25 @@ def configure_nrf_debug_session(self, debug_config):
             debug_config.server["arguments"].extend(
                 ["-speed", debug_config.speed]
             )
+
+
+def _prefer_local_ncs_package(self):
+    """If framework-zephyr-ncs330 is installed locally, point the version
+    spec to its local path so PlatformIO does not try to download it from
+    the registry (it's a local-only package, not published to PIO registry).
+    """
+    ncs_pkg_name = "framework-zephyr-ncs330"
+    if ncs_pkg_name not in self.packages:
+        return
+
+    packages_dir = Path(self._get_packages_dir()) if hasattr(self, '_get_packages_dir') else None
+    if packages_dir is None:
+        # Fallback: use the standard PIO packages dir
+        packages_dir = Path.home() / ".platformio" / "packages"
+
+    ncs_pkg_dir = packages_dir / ncs_pkg_name
+    pkg_json = ncs_pkg_dir / "package.json"
+    if pkg_json.exists():
+        # Point version to the local directory so PIO uses it directly
+        self.packages[ncs_pkg_name]["version"] = str(ncs_pkg_dir)
+        self.packages[ncs_pkg_name]["optional"] = False
