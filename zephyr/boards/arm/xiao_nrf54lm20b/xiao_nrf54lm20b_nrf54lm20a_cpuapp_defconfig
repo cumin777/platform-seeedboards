@@ -8,6 +8,13 @@ CONFIG_SERIAL=y
 CONFIG_CONSOLE=y
 CONFIG_UART_CONSOLE=y
 
+# Enable USB CDC ACM serial — console/shell/mcumgr over USB.
+# (Board has no accessible UART pins; physical serial is uart21 on D6/D7,
+#  console is routed to the USB CDC ACM device cdc_acm_uart.)
+CONFIG_USB_DEVICE_STACK=y
+CONFIG_USB_CDC_ACM=y
+CONFIG_USB_DEVICE_REMOTE_WAKEUP=n
+
 # Enable GPIO
 CONFIG_GPIO=y
 
