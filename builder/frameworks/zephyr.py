@@ -39,6 +39,22 @@ platform = env.PioPlatform()
 framework_package_name = platform.get_zephyr_package_name(board_name)
 framework_version = None
 NCS_MODULE_BOARDS = {"seeed-xiao-nrf54lm20a"}
+NCS_EXTRA_MODULE_REPOS = {
+    "seeed-xiao-nrf54lm20a": [
+        {
+            "name": "sdk-nrf",
+            "url": "https://github.com/nrfconnect/sdk-nrf.git",
+            "revision": "v3.3.0",
+            "path": "sdk-nrf",
+        },
+        {
+            "name": "sdk-nrfxlib",
+            "url": "https://github.com/nrfconnect/sdk-nrfxlib.git",
+            "revision": "v3.3.0",
+            "path": "sdk-nrfxlib",
+        },
+    ]
+}
 
 if board_name and "nrf" in board_name:
     env.Replace(
@@ -370,10 +386,17 @@ def _configure_ncs_modules(board_name):
         return
 
     modules = []
-    for package_name in ("framework-sdk-nrf", "framework-sdk-nrfxlib"):
-        package_dir = platform.get_package_dir(package_name)
-        if package_dir and os.path.isdir(package_dir):
-            modules.append(package_dir.replace("\\", "/"))
+    modules_root = join(framework_dir, "_pio", "modules")
+    os.makedirs(modules_root, exist_ok=True)
+
+    for module in NCS_EXTRA_MODULE_REPOS.get(board_name, []):
+        module_dir = join(modules_root, module["path"])
+        if not os.path.isdir(module_dir):
+            print(f"Pre-installing NCS module: {module['name']}")
+            _git_clone_with_retry(module["url"], module_dir, module["revision"])
+
+        if os.path.isdir(module_dir):
+            modules.append(module_dir.replace("\\", "/"))
 
     if modules:
         env.Replace(PIO_NCS_MODULES=";".join(modules))
