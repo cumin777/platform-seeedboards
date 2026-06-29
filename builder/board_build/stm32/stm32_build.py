@@ -48,6 +48,17 @@ env.Append(
                 "$SOURCES", "$TARGET"
             ]), "Building $TARGET"),
             suffix=".hex"
+        ),
+        BinToUf2=Builder(
+            action=env.VerboseAction(" ".join([
+                '"$PYTHONEXE"',
+                '"%s"' % join(platform.get_dir(), "builder", "tools", "uf2conv.py"),
+                "-i", "$SOURCES",
+                "-b", "${UF2_BASE_ADDR}",
+                "--family-id", "${UF2_FAMILY_ID}",
+                "-o", "$TARGET"
+            ]), "Building $TARGET"),
+            suffix=".uf2"
         )
     )
 )
@@ -79,7 +90,7 @@ else:
     env.Depends(target_firm, "checkprogsize")
 
 AlwaysBuild(env.Alias("nobuild", target_firm))
-target_buildprog = env.Alias("buildprog", target_firm, target_firm)
+target_buildprog_sources = [target_firm]
 
 #
 # Target: Print binary size
@@ -97,33 +108,39 @@ target_size = env.AddPlatformTarget(
 #
 debug_tools = env.BoardConfig().get("debug.tools", {})
 upload_actions = []
+target_bin = None
+target_uf2 = None
+_uf2_cfg = board.get("upload.uf2", {})
+_has_uf2_support = bool(_uf2_cfg) or "uf2" in board.get("upload.protocols", [])
 
-if upload_protocol == "uf2":
-    # Generate .bin for UF2 conversion
+if _has_uf2_support:
+    env.Replace(
+        UF2_BASE_ADDR=str(board.get("upload.offset_address", "0x08008000")),
+        UF2_FAMILY_ID=str(_uf2_cfg.get("family_id", "0x00C5C5C5"))
+    )
     target_bin = env.ElfToBin(
         join("$BUILD_DIR", "${PROGNAME}"), target_elf)
+    target_uf2 = env.BinToUf2(
+        join("$BUILD_DIR", "${PROGNAME}"), target_bin)
+    env.AddPlatformTarget(
+        "uf2",
+        target_uf2,
+        target_uf2,
+        "Build UF2 Image",
+        "Build UF2 image for UF2 bootloader upload"
+    )
+    target_buildprog_sources.append(target_uf2)
 
-    # UF2 conversion and upload via Python script
+target_buildprog = env.Alias("buildprog", target_buildprog_sources, target_buildprog_sources)
+
+if upload_protocol == "uf2":
+    # Upload the prebuilt .uf2 artifact via Python script
     _tools_dir = join(platform.get_dir(), "builder", "tools")
-    _uf2_cfg = board.get("upload.uf2", {})
-    _uf2_base = board.get("upload.offset_address", "0x08008000")
-    _uf2_family_id = _uf2_cfg.get("family_id", "0x00C5C5C5")
     _uf2_volume_label = _uf2_cfg.get("volume_label", "XIAOC5BOOT")
-
-    # Build the upload command. Use a wrapper script approach so that
-    # SCons variables ($SOURCE, $BUILD_DIR, $UPLOAD_PORT) are expanded
-    # at upload time.
     _upload_cmd = ' '.join([
         '"$PYTHONEXE"',
-        '"%s"' % join(_tools_dir, "uf2conv.py"),
-        '-i', '"$SOURCE"',
-        '-b', str(_uf2_base),
-        '--family-id', str(_uf2_family_id),
-        '-o', '"${BUILD_DIR}/${PROGNAME}.uf2"',
-        '&&',
-        '"$PYTHONEXE"',
         '"%s"' % join(_tools_dir, "uf2upload.py"),
-        '"${BUILD_DIR}/${PROGNAME}.uf2"',
+        '"$SOURCE"',
         '--label', str(_uf2_volume_label),
         '--port', '"${UPLOAD_PORT}"',
     ])
@@ -147,11 +164,10 @@ if upload_protocol == "uf2":
         ),
         env.VerboseAction(
             "$UPLOADCMD",
-            "Converting and uploading via UF2"
+            "Uploading via UF2"
         )
     ]
-    # Upload uses .bin as source (for UF2 conversion)
-    env.AddPlatformTarget("upload", target_bin, upload_actions, "Upload")
+    env.AddPlatformTarget("upload", target_uf2, upload_actions, "Upload")
 
 elif upload_protocol == "stlink":
     # Use STM32CubeProgrammer CLI for STLink upload
