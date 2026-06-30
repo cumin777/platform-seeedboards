@@ -11,4 +11,6 @@ config ROM_START_OFFSET
 config BOOTLOADER_MCUBOOT
 	default y
 
+source "boards/common/usb/Kconfig.cdc_acm_serial.defconfig"
+
 endif # BOARD_XIAO_NRF54LM20B_NRF54LM20A_CPUAPP
