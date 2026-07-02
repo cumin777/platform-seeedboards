@@ -53,7 +53,7 @@
 	can_phy0: can-phy0 {
 		compatible = "can-transceiver-gpio";
 		standby-gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>;
-		max-bitrate = <5000000>;
+		max-bitrate = <8000000>;
 		#phy-cells = <0>;
 	};
 };
@@ -71,6 +71,8 @@
  *   - FDCAN2 interrupts: IT0 = 86, IT1 = 87
  *   - Clock enable: RCC_APB1HENR bit 9  ->  STM32_CLOCK(APB1_2, 9)
  *   - Kernel clock: CCIPR1 bits 27:26   ->  FDCAN_SEL()
+ *     STM32C5 FDCAN supports PCLK1/PSIS/PSIK/HSE. Use PCLK1 here so the
+ *     controller is clocked from an always-configured bus clock.
  *
  * When upstream Zephyr adds these nodes to the SoC DTSI, the full
  * definitions here can be removed, leaving only the board-specific
@@ -85,7 +87,7 @@
 		interrupts = <34 0>, <35 0>;
 		interrupt-names = "int0", "int1";
 		clocks = <&rcc STM32_CLOCK(APB1_2, 9)>,
-			 <&rcc STM32_SRC_HSIS FDCAN_SEL(2)>;
+			 <&rcc STM32_SRC_PCLK1 FDCAN_SEL(0)>;
 		bosch,mram-cfg = <0x0 28 8 3 3 0 3 3>;
 		status = "disabled";
 	};
@@ -98,7 +100,7 @@
 		interrupts = <86 0>, <87 0>;
 		interrupt-names = "int0", "int1";
 		clocks = <&rcc STM32_CLOCK(APB1_2, 9)>,
-			 <&rcc STM32_SRC_HSIS FDCAN_SEL(2)>;
+			 <&rcc STM32_SRC_PCLK1 FDCAN_SEL(0)>;
 		bosch,mram-cfg = <0x350 28 8 3 3 0 3 3>;
 		status = "disabled";
 	};
