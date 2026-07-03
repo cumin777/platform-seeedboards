@@ -15,6 +15,7 @@
 /dts-v1/;
 #include <st/c5/stm32c5a3Xg.dtsi>
 #include <st/c5/stm32c5(9-a)3z(e-g)tx-pinctrl.dtsi>
+#include <zephyr/dt-bindings/flash_controller/xspi.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include "seeed_xiao_connector.dtsi"
 
@@ -35,6 +36,7 @@
 		led0 = &user_led;
 		watchdog0 = &iwdg;
 		can0 = &fdcan1;
+		flash1 = &ext_flash;
 	};
 
 	leds: leds {
@@ -134,6 +136,44 @@
 			 <&rcc STM32_SRC_CK48 CK48_SEL(2)>;
 		status = "okay";
 	};
+
+	/*
+	 * External NOR flash: Puya PY25Q128HA, 128 Mbit / 16 MByte.
+	 * The STM32C5 SoC DTSI does not define XSPI1 yet; values below are
+	 * derived from stm32c5a3xx.h:
+	 *   - XSPI1_R_BASE = AHB4PERIPH_BASE + 0x1001400 = 0x47001400
+	 *   - XSPI1 memory-mapped base = 0x90000000
+	 *   - XSPI1 IRQ = 91
+	 *   - Clock enable: RCC_AHB4ENR bit 20 -> STM32_CLOCK(AHB4, 20)
+	 *   - Kernel clock: CCIPR3 bits 1:0 -> XSPI1_SEL()
+	 */
+	xspi1: spi@47001400 {
+		compatible = "st,stm32-xspi";
+		reg = <0x47001400 0x400>, <0x90000000 DT_SIZE_M(16)>;
+		interrupt-parent = <&nvic>;
+		interrupts = <91 0>;
+		clock-names = "xspix", "xspi-ker";
+		clocks = <&rcc STM32_CLOCK(AHB4, 20)>,
+			 <&rcc STM32_SRC_HSIK XSPI1_SEL(2)>;
+		pinctrl-0 = <&xspi1_clk_pb2 &xspi1_ncs1_pb10
+			     &xspi1_io0_pb1 &xspi1_io1_pa5
+			     &xspi1_io2_pa7 &xspi1_io3_pa6>;
+		pinctrl-names = "default";
+		dlyb-bypass;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		ext_flash: py25q128ha@0 {
+			compatible = "st,stm32-xspi-nor";
+			reg = <0>;
+			size = <DT_SIZE_M(128)>;
+			spi-bus-width = <XSPI_SPI_MODE>;
+			data-rate = <XSPI_STR_TRANSFER>;
+			ospi-max-frequency = <DT_FREQ_M(48)>;
+			status = "okay";
+		};
+	};
 };
 
 &clk_hse {
@@ -142,6 +182,12 @@
 };
 
 &clk_hsidiv3 {
+	status = "okay";
+};
+
+&clk_hsik {
+	clock-frequency = <DT_FREQ_M(48)>;
+	xsik-div = "3";
 	status = "okay";
 };
 
