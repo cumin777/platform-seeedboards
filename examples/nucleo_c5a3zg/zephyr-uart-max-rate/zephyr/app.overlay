@@ -1,0 +1,23 @@
+/*
+ * Nucleo C5A3ZG pin overlay for seeed-xiao-stm32c5 board definition.
+ * Console is remapped to LPUART1 on PA3/PA2 and fixed to 1,000,000 bps.
+ */
+
+/ {
+	chosen {
+		zephyr,console = &lpuart1;
+		zephyr,shell-uart = &lpuart1;
+	};
+};
+
+&usart1 {
+	status = "disabled";
+};
+
+&lpuart1 {
+	pinctrl-0 = <&lpuart1_tx_pa3 &lpuart1_rx_pa2>;
+	pinctrl-names = "default";
+	current-speed = <1000000>;
+	tx-rx-swap;
+	status = "okay";
+};
