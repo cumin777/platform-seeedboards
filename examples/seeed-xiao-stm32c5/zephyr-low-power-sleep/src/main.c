@@ -1,0 +1,57 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * XIAO STM32C5 low-power Sleep test.
+ */
+
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/printk.h>
+
+#include <cmsis_core.h>
+
+#define LED0_NODE DT_ALIAS(led0)
+#define PREPARE_SECONDS 5
+
+static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+
+static void prepare_for_low_power(const char *mode)
+{
+	printk("XIAO STM32C5 low-power %s test\n", mode);
+	printk("Device will run normally for %d seconds, then enter %s.\n",
+	       PREPARE_SECONDS, mode);
+
+	if (gpio_is_ready_dt(&led) && gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE) == 0) {
+		for (int remaining = PREPARE_SECONDS; remaining > 0; remaining--) {
+			gpio_pin_toggle_dt(&led);
+			printk("Entering %s in %d second(s)\n", mode, remaining);
+			k_msleep(1000);
+		}
+
+		gpio_pin_set_dt(&led, 1);
+	} else {
+		for (int remaining = PREPARE_SECONDS; remaining > 0; remaining--) {
+			printk("Entering %s in %d second(s)\n", mode, remaining);
+			k_msleep(1000);
+		}
+	}
+}
+
+int main(void)
+{
+	prepare_for_low_power("Sleep");
+
+	printk("Entering Sleep now. Reset the board to exit this test.\n");
+	k_msleep(20);
+
+	SysTick->CTRL &= ~SysTick_CTRL_ENABLE_Msk;
+	__disable_irq();
+	SCB->SCR &= ~SCB_SCR_SLEEPDEEP_Msk;
+
+	while (true) {
+		__DSB();
+		__WFI();
+	}
+
+	return 0;
+}
