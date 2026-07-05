@@ -125,13 +125,13 @@ if _has_uf2_support:
     env.AddPlatformTarget(
         "uf2",
         target_uf2,
-        target_uf2,
+        [],
         "Build UF2 Image",
         "Build UF2 image for UF2 bootloader upload"
     )
     target_buildprog_sources.append(target_uf2)
 
-target_buildprog = env.Alias("buildprog", target_buildprog_sources, target_buildprog_sources)
+target_buildprog = env.Alias("buildprog", target_buildprog_sources)
 
 if upload_protocol == "uf2":
     # Upload the prebuilt .uf2 artifact via Python script
