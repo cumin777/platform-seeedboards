@@ -194,6 +194,10 @@ zephyr_udc0: &usbhs {
 	status = "okay";
 };
 
+&uart20 {
+	status = "okay";
+};
+
 &uart21 {
 	status = "okay";
 };
