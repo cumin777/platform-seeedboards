@@ -27,9 +27,10 @@
 #define TX_THREAD_STACK_SIZE 2048
 #define STATS_THREAD_STACK_SIZE 2048
 #define THREAD_PRIORITY 5
-#define FW_VERSION "2026-07-02.2"
+#define FW_VERSION "2026-07-06.1"
+#define DLC_BUCKET_COUNT 16
 
-#define FDCAN1_BASE_ADDR 0x4000a400UL
+#define FDCAN2_BASE_ADDR 0x4000a800UL
 #define FDCAN_CONFIG_BASE_ADDR 0x4000a500UL
 #define RCC_BASE_ADDR 0x44020c00UL
 #define RCC_APB1HRSTR_ADDR (RCC_BASE_ADDR + 0x78UL)
@@ -52,9 +53,18 @@ enum frame_format {
 	FRAME_FD_BRS,
 };
 
+enum payload_pattern {
+	PAYLOAD_FIXED,
+	PAYLOAD_FIXED_8,
+	PAYLOAD_FIXED_64,
+	PAYLOAD_ALT_8_64,
+	PAYLOAD_MIX_CANFD,
+};
+
 struct stress_config {
 	enum stress_mode mode;
 	enum frame_format format;
+	enum payload_pattern pattern;
 	bool loopback;
 	uint32_t nominal_bitrate;
 	uint32_t data_bitrate;
@@ -74,12 +84,20 @@ struct stress_stats {
 	atomic_t rx_unchecked;
 	atomic_t rx_seq_gap;
 	atomic_t rx_content_err;
+	atomic_t tx_len_frames[DLC_BUCKET_COUNT];
+	atomic_t rx_len_frames[DLC_BUCKET_COUNT];
 };
+
+static const uint8_t dlc_bucket_bytes[DLC_BUCKET_COUNT] = {
+	0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64
+};
+static const uint8_t mix_canfd_bytes[] = {8, 12, 16, 20, 24, 32, 48, 64};
 
 static const struct device *const can_dev = DEVICE_DT_GET(CANBUS_NODE);
 static struct stress_config cfg = {
 	.mode = MODE_TX_ONLY,
 	.format = FRAME_FD_BRS,
+	.pattern = PAYLOAD_FIXED,
 	.nominal_bitrate = 500000,
 	.data_bitrate = 2000000,
 	.payload_len = 64,
@@ -152,6 +170,24 @@ static const char *format_to_str(enum frame_format format)
 	}
 }
 
+static const char *pattern_to_str(enum payload_pattern pattern)
+{
+	switch (pattern) {
+	case PAYLOAD_FIXED:
+		return "fixed";
+	case PAYLOAD_FIXED_8:
+		return "fixed-8";
+	case PAYLOAD_FIXED_64:
+		return "fixed-64";
+	case PAYLOAD_ALT_8_64:
+		return "alt-8-64";
+	case PAYLOAD_MIX_CANFD:
+		return "mix-canfd";
+	default:
+		return "?";
+	}
+}
+
 static bool tx_enabled(enum stress_mode mode)
 {
 	return mode == MODE_TX_ONLY || mode == MODE_BIDIRECTIONAL;
@@ -209,6 +245,38 @@ static bool parse_format(const char *text, enum frame_format *format)
 	return false;
 }
 
+static bool parse_pattern(const char *text, enum payload_pattern *pattern)
+{
+	if (strcmp(text, "fixed") == 0) {
+		*pattern = PAYLOAD_FIXED;
+		return true;
+	}
+
+	if (strcmp(text, "fixed-8") == 0 || strcmp(text, "fixed_8") == 0) {
+		*pattern = PAYLOAD_FIXED_8;
+		return true;
+	}
+
+	if (strcmp(text, "fixed-64") == 0 || strcmp(text, "fixed_64") == 0) {
+		*pattern = PAYLOAD_FIXED_64;
+		return true;
+	}
+
+	if (strcmp(text, "alt-8-64") == 0 || strcmp(text, "alt_8_64") == 0 ||
+	    strcmp(text, "alternate-8-64") == 0) {
+		*pattern = PAYLOAD_ALT_8_64;
+		return true;
+	}
+
+	if (strcmp(text, "mix-canfd") == 0 || strcmp(text, "mix_canfd") == 0 ||
+	    strcmp(text, "mix") == 0) {
+		*pattern = PAYLOAD_MIX_CANFD;
+		return true;
+	}
+
+	return false;
+}
+
 static const char *psr_lec_to_str(uint32_t lec)
 {
 	switch (lec) {
@@ -247,29 +315,29 @@ static void dump_core_clock(const char *prefix)
 
 static void dump_regs(const char *prefix)
 {
-	uint32_t cccr = sys_read32(FDCAN1_BASE_ADDR + 0x018UL);
-	uint32_t ecr = sys_read32(FDCAN1_BASE_ADDR + 0x040UL);
-	uint32_t psr = sys_read32(FDCAN1_BASE_ADDR + 0x044UL);
+	uint32_t cccr = sys_read32(FDCAN2_BASE_ADDR + 0x018UL);
+	uint32_t ecr = sys_read32(FDCAN2_BASE_ADDR + 0x040UL);
+	uint32_t psr = sys_read32(FDCAN2_BASE_ADDR + 0x044UL);
 	uint32_t ccipr1 = sys_read32(RCC_CCIPR1_ADDR);
 	uint32_t fdcan_sel = (ccipr1 & RCC_FDCANSEL_MASK) >> RCC_FDCANSEL_SHIFT;
 
-	printk("%s FDCAN1 CREL=%08x ENDN=%08x DBTP=%08x TEST=%08x CCCR=%08x NBTP=%08x\n",
+	printk("%s FDCAN2 CREL=%08x ENDN=%08x DBTP=%08x TEST=%08x CCCR=%08x NBTP=%08x\n",
 	       prefix,
-	       sys_read32(FDCAN1_BASE_ADDR + 0x000UL),
-	       sys_read32(FDCAN1_BASE_ADDR + 0x004UL),
-	       sys_read32(FDCAN1_BASE_ADDR + 0x00cUL),
-	       sys_read32(FDCAN1_BASE_ADDR + 0x010UL),
+	       sys_read32(FDCAN2_BASE_ADDR + 0x000UL),
+	       sys_read32(FDCAN2_BASE_ADDR + 0x004UL),
+	       sys_read32(FDCAN2_BASE_ADDR + 0x00cUL),
+	       sys_read32(FDCAN2_BASE_ADDR + 0x010UL),
 	       cccr,
-	       sys_read32(FDCAN1_BASE_ADDR + 0x01cUL));
-	printk("%s FDCAN1 ECR=%08x PSR=%08x TDCR=%08x IR=%08x IE=%08x RXGFC=%08x TXBC=%08x TXBRP=%08x TXBAR=%08x\n",
+	       sys_read32(FDCAN2_BASE_ADDR + 0x01cUL));
+	printk("%s FDCAN2 ECR=%08x PSR=%08x TDCR=%08x IR=%08x IE=%08x RXGFC=%08x TXBC=%08x TXBRP=%08x TXBAR=%08x\n",
 	       prefix, ecr, psr,
-	       sys_read32(FDCAN1_BASE_ADDR + 0x048UL),
-	       sys_read32(FDCAN1_BASE_ADDR + 0x050UL),
-	       sys_read32(FDCAN1_BASE_ADDR + 0x054UL),
-	       sys_read32(FDCAN1_BASE_ADDR + 0x080UL),
-	       sys_read32(FDCAN1_BASE_ADDR + 0x0c0UL),
-	       sys_read32(FDCAN1_BASE_ADDR + 0x0c8UL),
-	       sys_read32(FDCAN1_BASE_ADDR + 0x0ccUL));
+	       sys_read32(FDCAN2_BASE_ADDR + 0x048UL),
+	       sys_read32(FDCAN2_BASE_ADDR + 0x050UL),
+	       sys_read32(FDCAN2_BASE_ADDR + 0x054UL),
+	       sys_read32(FDCAN2_BASE_ADDR + 0x080UL),
+	       sys_read32(FDCAN2_BASE_ADDR + 0x0c0UL),
+	       sys_read32(FDCAN2_BASE_ADDR + 0x0c8UL),
+	       sys_read32(FDCAN2_BASE_ADDR + 0x0ccUL));
 	printk("%s CCCR init=%u cce=%u asm=%u csa=%u csr=%u dar=%u fdoe=%u brse=%u "
 	       "ECR rec=%u tec=%u cel=%u PSR lec=%s dlec=%s bo=%u ew=%u ep=%u act=%u\n",
 	       prefix,
@@ -314,6 +382,59 @@ static int parse_u32(const char *text, uint32_t *value)
 	return 0;
 }
 
+static int payload_len_bucket(uint8_t payload_len)
+{
+	for (int i = 0; i < DLC_BUCKET_COUNT; i++) {
+		if (dlc_bucket_bytes[i] == payload_len) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+static uint8_t payload_len_for_frame(const struct stress_config *local_cfg, uint32_t seq)
+{
+	switch (local_cfg->pattern) {
+	case PAYLOAD_FIXED_8:
+		return 8;
+	case PAYLOAD_FIXED_64:
+		return 64;
+	case PAYLOAD_ALT_8_64:
+		return (seq & 1U) ? 64 : 8;
+	case PAYLOAD_MIX_CANFD:
+		return mix_canfd_bytes[seq % ARRAY_SIZE(mix_canfd_bytes)];
+	case PAYLOAD_FIXED:
+	default:
+		return local_cfg->payload_len;
+	}
+}
+
+static void estimate_frame_bits(enum frame_format format, uint8_t payload_len,
+				uint32_t *nominal_bits, uint32_t *data_bits)
+{
+	uint32_t crc_bits = payload_len > 16U ? 21U : 17U;
+
+	if (format == FRAME_CLASSIC_CAN) {
+		*nominal_bits = 47U + (payload_len * 8U);
+		*data_bits = 0U;
+		return;
+	}
+
+	if (format == FRAME_FD_NO_BRS) {
+		*nominal_bits = 36U + crc_bits + (payload_len * 8U);
+		*data_bits = 0U;
+		return;
+	}
+
+	/*
+	 * Approximation without bit stuffing: arbitration/control/ACK/EOF/IFS at
+	 * nominal rate, ESI/DLC/payload/CRC at data rate.
+	 */
+	*nominal_bits = 30U;
+	*data_bits = 6U + crc_bits + (payload_len * 8U);
+}
+
 static void reset_stats(void)
 {
 	atomic_set(&stats.tx_ok, 0);
@@ -326,6 +447,10 @@ static void reset_stats(void)
 	atomic_set(&stats.rx_unchecked, 0);
 	atomic_set(&stats.rx_seq_gap, 0);
 	atomic_set(&stats.rx_content_err, 0);
+	for (int i = 0; i < DLC_BUCKET_COUNT; i++) {
+		atomic_set(&stats.tx_len_frames[i], 0);
+		atomic_set(&stats.rx_len_frames[i], 0);
+	}
 	tx_seq = 0;
 	rx_last_seq = 0;
 	rx_have_seq = false;
@@ -353,12 +478,16 @@ static void fill_payload(struct can_frame *frame, uint32_t seq, uint8_t payload_
 static void rx_callback(const struct device *dev, struct can_frame *frame, void *user_data)
 {
 	uint8_t payload_len = can_dlc_to_bytes(frame->dlc);
+	int bucket = payload_len_bucket(payload_len);
 
 	ARG_UNUSED(dev);
 	ARG_UNUSED(user_data);
 
 	atomic_inc(&stats.rx_frames);
 	atomic_add(&stats.rx_bytes, payload_len);
+	if (bucket >= 0) {
+		atomic_inc(&stats.rx_len_frames[bucket]);
+	}
 
 	if (payload_len < 8 || sys_get_le32(&frame->data[0]) != TEST_MAGIC) {
 		atomic_inc(&stats.rx_unchecked);
@@ -391,12 +520,16 @@ static void rx_callback(const struct device *dev, struct can_frame *frame, void 
 static void tx_callback(const struct device *dev, int error, void *user_data)
 {
 	uint8_t payload_len = (uint8_t)(uintptr_t)user_data;
+	int bucket = payload_len_bucket(payload_len);
 
 	ARG_UNUSED(dev);
 
 	if (error == 0) {
 		atomic_inc(&stats.tx_ok);
 		atomic_add(&stats.tx_bytes, payload_len);
+		if (bucket >= 0) {
+			atomic_inc(&stats.tx_len_frames[bucket]);
+		}
 	} else {
 		atomic_inc(&stats.tx_callback_err);
 	}
@@ -485,11 +618,12 @@ static void print_stats_line(const char *prefix)
 
 	(void)can_get_state(can_dev, &state, &err_cnt);
 
-	printk("%s t=%us mode=%s format=%s nominal=%u data=%u len=%u tx_ok=%ld tx_fail=%ld "
+	printk("%s t=%us mode=%s format=%s pattern=%s nominal=%u data=%u len=%u tx_ok=%ld tx_fail=%ld "
 	       "tx_cb_err=%ld rx=%ld checked=%ld unchecked=%ld gap=%ld content_err=%ld "
 	       "tx_Bps=%ld rx_Bps=%ld state=%s rxerr=%u txerr=%u\n",
 	       prefix, elapsed_s, mode_to_str(cfg.mode), format_to_str(cfg.format),
-	       cfg.nominal_bitrate, cfg.data_bitrate, cfg.payload_len, atomic_get(&stats.tx_ok),
+	       pattern_to_str(cfg.pattern), cfg.nominal_bitrate, cfg.data_bitrate,
+	       cfg.payload_len, atomic_get(&stats.tx_ok),
 	       atomic_get(&stats.tx_enqueue_fail), atomic_get(&stats.tx_callback_err),
 	       atomic_get(&stats.rx_frames), atomic_get(&stats.rx_checked),
 	       atomic_get(&stats.rx_unchecked), atomic_get(&stats.rx_seq_gap),
@@ -511,14 +645,116 @@ static void print_stats_line(const char *prefix)
 #endif
 }
 
+static void print_len_histogram(const char *prefix, atomic_t buckets[DLC_BUCKET_COUNT])
+{
+	printk("%s_len_hist", prefix);
+	for (int i = 0; i < DLC_BUCKET_COUNT; i++) {
+		long count = atomic_get(&buckets[i]);
+
+		if (count != 0) {
+			printk(" %u:%ld", dlc_bucket_bytes[i], count);
+		}
+	}
+	printk("\n");
+}
+
+static void print_final_metrics(void)
+{
+	uint32_t elapsed_ms = run_started_ms == 0U ? 0U : k_uptime_get_32() - run_started_ms;
+	uint64_t elapsed = elapsed_ms == 0U ? 1U : elapsed_ms;
+	uint64_t tx_ok = (uint64_t)atomic_get(&stats.tx_ok);
+	uint64_t tx_fail = (uint64_t)atomic_get(&stats.tx_enqueue_fail);
+	uint64_t tx_cb_err = (uint64_t)atomic_get(&stats.tx_callback_err);
+	uint64_t rx_frames = (uint64_t)atomic_get(&stats.rx_frames);
+	uint64_t rx_checked = (uint64_t)atomic_get(&stats.rx_checked);
+	uint64_t rx_seq_gap = (uint64_t)atomic_get(&stats.rx_seq_gap);
+	uint64_t rx_content_err = (uint64_t)atomic_get(&stats.rx_content_err);
+	uint64_t tx_bytes = (uint64_t)atomic_get(&stats.tx_bytes);
+	uint64_t rx_bytes = (uint64_t)atomic_get(&stats.rx_bytes);
+	uint64_t tx_attempts = tx_ok + tx_fail + tx_cb_err;
+	uint64_t tx_frame_errors = tx_fail + tx_cb_err;
+	uint64_t rx_expected = rx_checked + rx_seq_gap;
+	uint64_t rx_frame_errors = rx_seq_gap + rx_content_err;
+	uint64_t frame_errors = tx_frame_errors + rx_frame_errors;
+	uint64_t frame_total = tx_attempts + rx_expected + rx_content_err;
+	uint64_t est_nominal_bits = 0U;
+	uint64_t est_data_bits = 0U;
+	uint64_t total_payload_bps;
+	uint64_t tx_payload_bps;
+	uint64_t rx_payload_bps;
+	uint64_t tx_fps;
+	uint64_t rx_fps;
+	uint64_t rx_checked_fps;
+	uint64_t total_error_permille;
+	uint64_t tx_error_permille;
+	uint64_t rx_loss_permille;
+
+	for (int i = 0; i < DLC_BUCKET_COUNT; i++) {
+		uint32_t nominal_bits;
+		uint32_t data_bits;
+		uint64_t count = (uint64_t)atomic_get(&stats.tx_len_frames[i]) +
+				 (uint64_t)atomic_get(&stats.rx_len_frames[i]);
+
+		if (count == 0U) {
+			continue;
+		}
+
+		estimate_frame_bits(cfg.format, dlc_bucket_bytes[i], &nominal_bits, &data_bits);
+		est_nominal_bits += count * nominal_bits;
+		est_data_bits += count * data_bits;
+	}
+
+	tx_payload_bps = tx_bytes * 8U * 1000U / elapsed;
+	rx_payload_bps = rx_bytes * 8U * 1000U / elapsed;
+	total_payload_bps = (tx_bytes + rx_bytes) * 8U * 1000U / elapsed;
+	tx_fps = tx_ok * 1000U / elapsed;
+	rx_fps = rx_frames * 1000U / elapsed;
+	rx_checked_fps = rx_checked * 1000U / elapsed;
+	tx_error_permille = tx_attempts == 0U ? 0U : tx_frame_errors * 1000U / tx_attempts;
+	rx_loss_permille = rx_expected == 0U ? 0U : rx_seq_gap * 1000U / rx_expected;
+	total_error_permille = frame_total == 0U ? 0U : frame_errors * 1000U / frame_total;
+
+	printk("perf elapsed_ms=%u tx_fps=%llu rx_fps=%llu rx_checked_fps=%llu "
+	       "tx_payload_bps=%llu rx_payload_bps=%llu total_payload_bps=%llu\n",
+	       elapsed_ms,
+	       (unsigned long long)tx_fps,
+	       (unsigned long long)rx_fps,
+	       (unsigned long long)rx_checked_fps,
+	       (unsigned long long)tx_payload_bps,
+	       (unsigned long long)rx_payload_bps,
+	       (unsigned long long)total_payload_bps);
+	printk("quality tx_error_permille=%llu rx_loss_permille=%llu total_error_permille=%llu "
+	       "tx_attempts=%llu tx_ok=%llu tx_frame_errors=%llu rx_checked=%llu "
+	       "rx_seq_gap=%llu rx_content_err=%llu\n",
+	       (unsigned long long)tx_error_permille,
+	       (unsigned long long)rx_loss_permille,
+	       (unsigned long long)total_error_permille,
+	       (unsigned long long)tx_attempts,
+	       (unsigned long long)tx_ok,
+	       (unsigned long long)tx_frame_errors,
+	       (unsigned long long)rx_checked,
+	       (unsigned long long)rx_seq_gap,
+	       (unsigned long long)rx_content_err);
+	printk("estimate configured_nominal_bps=%u configured_data_bps=%u "
+	       "est_nominal_phase_bps=%llu est_data_phase_bps=%llu "
+	       "est_total_bus_bps_no_stuff=%llu\n",
+	       cfg.nominal_bitrate, cfg.data_bitrate,
+	       (unsigned long long)(est_nominal_bits * 1000U / elapsed),
+	       (unsigned long long)(est_data_bits * 1000U / elapsed),
+	       (unsigned long long)((est_nominal_bits + est_data_bits) * 1000U / elapsed));
+	print_len_histogram("tx", stats.tx_len_frames);
+	print_len_histogram("rx", stats.rx_len_frames);
+}
+
 static void stop_run(bool print_summary)
 {
 	k_mutex_lock(&cfg_lock, K_FOREVER);
 	atomic_set(&running, 0);
-	(void)stop_can_if_needed();
 	if (print_summary) {
 		print_stats_line("summary");
+		print_final_metrics();
 	}
+	(void)stop_can_if_needed();
 	k_mutex_unlock(&cfg_lock);
 }
 
@@ -533,6 +769,8 @@ static void tx_thread(void *arg1, void *arg2, void *arg3)
 		struct can_frame frame = {
 			.id = TEST_CAN_ID,
 		};
+		uint32_t seq;
+		uint8_t payload_len;
 		int ret;
 
 		if (!atomic_get(&running)) {
@@ -557,8 +795,11 @@ static void tx_thread(void *arg1, void *arg2, void *arg3)
 			frame.flags = 0;
 		}
 
-		frame.dlc = can_bytes_to_dlc(local_cfg.payload_len);
-		fill_payload(&frame, tx_seq++, local_cfg.payload_len);
+		seq = tx_seq++;
+		payload_len = payload_len_for_frame(&local_cfg, seq);
+		frame.dlc = can_bytes_to_dlc(payload_len);
+		payload_len = can_dlc_to_bytes(frame.dlc);
+		fill_payload(&frame, seq, payload_len);
 
 		if (k_sem_take(&tx_sem, K_MSEC(100)) != 0) {
 			atomic_inc(&stats.tx_enqueue_fail);
@@ -566,7 +807,7 @@ static void tx_thread(void *arg1, void *arg2, void *arg3)
 		}
 
 		ret = can_send(can_dev, &frame, K_NO_WAIT, tx_callback,
-			       (void *)(uintptr_t)local_cfg.payload_len);
+			       (void *)(uintptr_t)payload_len);
 		if (ret != 0) {
 			atomic_inc(&stats.tx_enqueue_fail);
 			k_sem_give(&tx_sem);
@@ -636,6 +877,7 @@ static int cmd_start(const struct shell *sh, size_t argc, char **argv)
 			return -EINVAL;
 		}
 		new_cfg.payload_len = (uint8_t)parsed;
+		new_cfg.pattern = PAYLOAD_FIXED;
 	}
 
 	if (argc > 5) {
@@ -661,8 +903,31 @@ static int cmd_start(const struct shell *sh, size_t argc, char **argv)
 		}
 	}
 
-	if (new_cfg.format == FRAME_CLASSIC_CAN && new_cfg.payload_len > 8U) {
-		shell_error(sh, "classic CAN payload bytes must be 0..8");
+	if (argc > 8) {
+		if (!parse_pattern(argv[8], &new_cfg.pattern)) {
+			shell_error(sh, "pattern must be fixed, fixed-8, fixed-64, alt-8-64, or mix-canfd");
+			return -EINVAL;
+		}
+	}
+
+	switch (new_cfg.pattern) {
+	case PAYLOAD_FIXED_8:
+		new_cfg.payload_len = 8U;
+		break;
+	case PAYLOAD_FIXED_64:
+	case PAYLOAD_ALT_8_64:
+	case PAYLOAD_MIX_CANFD:
+		new_cfg.payload_len = 64U;
+		break;
+	case PAYLOAD_FIXED:
+	default:
+		break;
+	}
+
+	if (new_cfg.format == FRAME_CLASSIC_CAN &&
+	    (new_cfg.payload_len > 8U || new_cfg.pattern == PAYLOAD_FIXED_64 ||
+	     new_cfg.pattern == PAYLOAD_ALT_8_64 || new_cfg.pattern == PAYLOAD_MIX_CANFD)) {
+		shell_error(sh, "classic CAN supports only fixed payload bytes 0..8");
 		return -EINVAL;
 	}
 
@@ -689,9 +954,9 @@ static int cmd_start(const struct shell *sh, size_t argc, char **argv)
 		return ret;
 	}
 
-	shell_print(sh, "started mode=%s format=%s nominal=%u data=%u len=%u duration=%us fps=%u",
+	shell_print(sh, "started mode=%s format=%s pattern=%s nominal=%u data=%u len=%u duration=%us fps=%u",
 		    mode_to_str(cfg.mode), format_to_str(cfg.format),
-		    cfg.nominal_bitrate, cfg.data_bitrate, cfg.payload_len,
+		    pattern_to_str(cfg.pattern), cfg.nominal_bitrate, cfg.data_bitrate, cfg.payload_len,
 		    cfg.duration_s, cfg.target_fps);
 	return 0;
 }
@@ -739,8 +1004,8 @@ static int cmd_regs(const struct shell *sh, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(cfd_cmds,
 	SHELL_CMD_ARG(start, NULL,
-		      "start <tx|rx|bidi|loop> [nominal] [data] [bytes] [seconds] [fps] [can|fd|fd-brs]",
-		      cmd_start, 2, 6),
+		      "start <tx|rx|bidi|loop> [nominal] [data] [bytes] [seconds] [fps] [can|fd|fd-brs] [fixed|fixed-8|fixed-64|alt-8-64|mix-canfd]",
+		      cmd_start, 2, 7),
 	SHELL_CMD(stop, NULL, "stop current test", cmd_stop),
 	SHELL_CMD(status, NULL, "print current statistics", cmd_status),
 	SHELL_CMD(clock, NULL, "print CAN core clock from Zephyr API", cmd_clock),
