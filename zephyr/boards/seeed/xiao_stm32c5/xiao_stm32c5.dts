@@ -30,13 +30,13 @@
 		zephyr,sram = &sram1;
 		zephyr,flash = &flash0;
 		zephyr,code-partition = &slot0_partition;
-		zephyr,canbus = &fdcan1;
+		zephyr,canbus = &fdcan2;
 	};
 
 	aliases {
 		led0 = &user_led;
 		watchdog0 = &iwdg;
-		can0 = &fdcan1;
+		can0 = &fdcan2;
 		flash1 = &ext_flash;
 		imu0 = &lsm6ds3tr_c;
 		imu-heater = &imu_heater_pwm;
@@ -86,8 +86,8 @@
  *   - FDCAN2 interrupts: IT0 = 86, IT1 = 87
  *   - Clock enable: RCC_APB1HENR bit 9  ->  STM32_CLOCK(APB1_2, 9)
  *   - Kernel clock: CCIPR1 bits 27:26   ->  FDCAN_SEL()
- *     STM32C5 FDCAN supports PCLK1/PSIS/PSIK/HSE. Use PCLK1 here so the
- *     controller is clocked from an always-configured bus clock.
+ *     STM32C5 FDCAN supports PCLK1/PSIS/PSIK/HSE. Use PSIS here so CAN FD
+ *     data phase bit timing can reach 8 Mbps with enough time quanta.
  *
  * When upstream Zephyr adds these nodes to the SoC DTSI, the full
  * definitions here can be removed, leaving only the board-specific
@@ -102,20 +102,20 @@
 		interrupts = <34 0>, <35 0>;
 		interrupt-names = "int0", "int1";
 		clocks = <&rcc STM32_CLOCK(APB1_2, 9)>,
-			 <&rcc STM32_SRC_PCLK1 FDCAN_SEL(0)>;
+			 <&rcc STM32_SRC_PSIS FDCAN_SEL(1)>;
 		bosch,mram-cfg = <0x0 28 8 3 3 0 3 3>;
 		status = "disabled";
 	};
 
 	fdcan2: can@4000a800 {
 		compatible = "st,stm32-fdcan";
-		reg = <0x4000a800 0x400>, <0x4000ac00 0x350>;
+		reg = <0x4000a800 0x400>, <0x4000ac00 0x6a0>;
 		reg-names = "m_can", "message_ram";
 		interrupt-parent = <&nvic>;
 		interrupts = <86 0>, <87 0>;
 		interrupt-names = "int0", "int1";
 		clocks = <&rcc STM32_CLOCK(APB1_2, 9)>,
-			 <&rcc STM32_SRC_PCLK1 FDCAN_SEL(0)>;
+			 <&rcc STM32_SRC_PSIS FDCAN_SEL(1)>;
 		bosch,mram-cfg = <0x350 28 8 3 3 0 3 3>;
 		status = "disabled";
 	};
@@ -204,6 +204,11 @@
 };
 
 &clk_hsis {
+	status = "okay";
+};
+
+&clk_psis {
+	clock-frequency = <DT_FREQ_M(144)>;
 	status = "okay";
 };
 
@@ -322,8 +327,8 @@
 	};
 };
 
-&fdcan1 {
-	pinctrl-0 = <&fdcan1_rx_pb8 &fdcan1_tx_pb9>;
+&fdcan2 {
+	pinctrl-0 = <&fdcan2_rx_pb5 &fdcan2_tx_pb13>;
 	pinctrl-names = "default";
 	phys = <&can_phy0>;
 	status = "okay";
@@ -342,14 +347,16 @@
 	apb1-prescaler = <2>;
 	apb2-prescaler = <2>;
 	apb3-prescaler = <2>;
+	st,psi-frequency = <144>;
+	st,psi-source = "HSE";
 };
 
 &iwdg {
 	status = "okay";
 };
 
-/* XIAO connector CAN alias (must be after fdcan1 definition above) */
-xiao_can: &fdcan1 {};
+/* XIAO connector CAN alias (must be after fdcan2 definition above) */
+xiao_can: &fdcan2 {};
 
 /* USB device controller alias (standard Zephyr UDC) */
 zephyr_udc0: &usb {};
