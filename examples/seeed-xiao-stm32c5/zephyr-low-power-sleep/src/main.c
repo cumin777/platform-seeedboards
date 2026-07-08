@@ -11,13 +11,21 @@
 
 #include <cmsis_core.h>
 #include <stm32_ll_bus.h>
+#include <stm32_ll_cortex.h>
 #include <stm32_ll_gpio.h>
+#include <stm32_ll_rcc.h>
 #include <stm32_ll_usart.h>
 
 #define LED0_NODE DT_ALIAS(led0)
+#define CAN_PHY_NODE DT_NODELABEL(can_phy0)
 #define PREPARE_SECONDS 5
 
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+
+#if DT_NODE_HAS_PROP(CAN_PHY_NODE, standby_gpios)
+static const struct gpio_dt_spec can_stb =
+	GPIO_DT_SPEC_GET(CAN_PHY_NODE, standby_gpios);
+#endif
 
 static void prepare_for_low_power(const char *mode)
 {
@@ -95,11 +103,96 @@ static void disable_usb_peripheral(void)
 #endif
 }
 
+static void switch_system_clock_to_hsidiv3(void)
+{
+	LL_RCC_HSIDIV3_Enable();
+	for (uint32_t timeout = 100000U;
+	     timeout > 0U && LL_RCC_HSIDIV3_IsReady() == 0U; timeout--) {
+	}
+
+	if (LL_RCC_HSIDIV3_IsReady() == 0U) {
+		return;
+	}
+
+	LL_RCC_SetAHBPrescaler(LL_RCC_HCLK_PRESCALER_1);
+	LL_RCC_SetAPB1Prescaler(LL_RCC_APB1_PRESCALER_1);
+	LL_RCC_SetAPB2Prescaler(LL_RCC_APB2_PRESCALER_1);
+	LL_RCC_SetAPB3Prescaler(LL_RCC_APB3_PRESCALER_1);
+	LL_RCC_SetSysClkSource(LL_RCC_SYS_CLKSOURCE_HSIDIV3);
+
+	for (uint32_t timeout = 100000U;
+	     timeout > 0U &&
+	     LL_RCC_GetSysClkSource() != LL_RCC_SYS_CLKSOURCE_STATUS_HSIDIV3;
+	     timeout--) {
+	}
+
+	if (LL_RCC_GetSysClkSource() != LL_RCC_SYS_CLKSOURCE_STATUS_HSIDIV3) {
+		return;
+	}
+
+	LL_RCC_HSIK_Disable();
+	LL_RCC_HSIS_Disable();
+
+#if defined(RCC_CR1_PSISON)
+	LL_RCC_PSIS_Disable();
+#endif
+#if defined(RCC_CR1_PSIKON)
+	LL_RCC_PSIK_Disable();
+#endif
+#if defined(RCC_CR1_HSEON)
+	LL_RCC_HSE_Disable();
+#endif
+}
+
+static void disable_sleep_clocks_like_cube(void)
+{
+	LL_AHB1_GRP1_DisableClockLowPower(LL_AHB1_GRP1_PERIPH_ALL);
+	LL_AHB2_GRP1_DisableClockLowPower(LL_AHB2_GRP1_PERIPH_ALL);
+#ifdef LL_AHB4_GRP1_PERIPH_ALL
+	LL_AHB4_GRP1_DisableClockLowPower(LL_AHB4_GRP1_PERIPH_ALL);
+#endif
+
+	LL_APB1_GRP1_DisableClockLowPower(LL_APB1_GRP1_PERIPH_ALL);
+	LL_APB1_GRP2_DisableClockLowPower(LL_APB1_GRP2_PERIPH_ALL);
+	LL_APB2_GRP1_DisableClockLowPower(LL_APB2_GRP1_PERIPH_ALL);
+	LL_APB3_GRP1_DisableClockLowPower(LL_APB3_GRP1_PERIPH_ALL);
+
+	LL_AHB1_DisableBusClock();
+#ifdef LL_AHB4_GRP1_PERIPH_ALL
+	LL_AHB4_DisableBusClock();
+#endif
+	LL_APB1_DisableBusClock();
+	LL_APB2_DisableBusClock();
+	LL_APB3_DisableBusClock();
+}
+
+static void disable_debug_low_power_emulation(void)
+{
+#ifdef DBGMCU
+	DBGMCU->CR &= ~(DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STOP |
+		       DBGMCU_CR_DBG_STANDBY | DBGMCU_CR_TRACE_IOEN |
+		       DBGMCU_CR_TRACE_EN);
+#endif
+}
+
 static void prepare_board_for_sleep(void)
 {
+#if DT_NODE_HAS_PROP(CAN_PHY_NODE, standby_gpios)
+	if (gpio_is_ready_dt(&can_stb)) {
+		(void)gpio_pin_configure_dt(&can_stb, GPIO_OUTPUT_ACTIVE);
+	}
+#endif
+
+	if (gpio_is_ready_dt(&led)) {
+		(void)gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
+	}
+
 	release_console_and_usb_pins();
 	disable_console_uart();
 	disable_usb_peripheral();
+	disable_debug_low_power_emulation();
+	switch_system_clock_to_hsidiv3();
+	disable_sleep_clocks_like_cube();
 	clear_pending_irqs();
 }
 
