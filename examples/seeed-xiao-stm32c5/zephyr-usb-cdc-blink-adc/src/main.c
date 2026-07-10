@@ -7,6 +7,7 @@
  * Zephyr console, so LED blink is independent of USB CDC state.
  */
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,6 +16,7 @@
 #include <zephyr/drivers/adc.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
@@ -23,6 +25,8 @@
 #define LED0_NODE DT_ALIAS(led0)
 #define BAT_EN_NODE DT_ALIAS(baten)
 #define PWM_A4_NODE DT_ALIAS(pwm_a4)
+#define HEATER_NODE DT_ALIAS(imu_heater)
+#define IMU_NODE DT_ALIAS(imu0)
 #define EXT_FLASH_NODE DT_NODELABEL(ext_flash)
 
 #if !DT_NODE_EXISTS(DT_PATH(zephyr_user)) || \
@@ -45,16 +49,24 @@
 #define LED_PERIOD_MS 500
 #define PRINT_PERIOD_MS 5000
 #define A4_PWM_DUTY_PERCENT 50U
+#define HEATER_PWM_LOW_DUTY_PERCENT 0U
+#define HEATER_PWM_HIGH_DUTY_PERCENT 10U
 #define FLASH_TEST_OFFSET 0x00100000
 #define FLASH_TEST_LEN 256
 #define TX_RING_BUF_SIZE 2048
 #define PRINT_BUF_SIZE 512
+#define LSM6DSL_REG_WHO_AM_I 0x0f
+#define LSM6DSL_REG_CTRL1_XL 0x10
+#define LSM6DSL_REG_OUT_TEMP_L 0x20
+#define LSM6DSL_WHO_AM_I_EXPECTED 0x6a
 
 static const struct device *const cdc_dev =
 	DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 static const struct gpio_dt_spec bat_en = GPIO_DT_SPEC_GET(BAT_EN_NODE, gpios);
 static const struct pwm_dt_spec pwm_a4 = PWM_DT_SPEC_GET(PWM_A4_NODE);
+static const struct pwm_dt_spec heater_pwm = PWM_DT_SPEC_GET(HEATER_NODE);
+static const struct i2c_dt_spec imu_i2c = I2C_DT_SPEC_GET(IMU_NODE);
 static const struct device *const battery_adc_dev =
 	DEVICE_DT_GET(DT_NODELABEL(adc1));
 static const struct adc_channel_cfg battery_adc_cfg = {
@@ -86,8 +98,11 @@ static uint32_t led_toggle_count;
 static bool led_ready;
 static bool adc_ready;
 static bool pwm_ready;
+static bool heater_pwm_ready;
 static bool battery_ready;
 static bool flash_ready;
+static uint32_t heater_pwm_duty_percent;
+static int heater_pwm_ret;
 static struct flash_pages_info flash_page;
 static uint8_t flash_write_buf[FLASH_TEST_LEN];
 static uint8_t flash_read_buf[FLASH_TEST_LEN];
@@ -103,6 +118,15 @@ struct flash_cycle_result {
 	size_t mismatch_offset;
 	uint8_t expected;
 	uint8_t actual;
+};
+
+struct imu_temp_result {
+	bool bus_ready;
+	int ret;
+	uint8_t who_am_i;
+	uint8_t ctrl1_xl;
+	int16_t raw_temperature;
+	int32_t temperature_mc;
 };
 
 static struct k_thread led_thread_data;
@@ -275,6 +299,54 @@ static int read_battery_average(uint16_t *raw_avg, int32_t *adc_mv,
 	return 0;
 }
 
+static void read_imu_temperature(struct imu_temp_result *result)
+{
+	uint8_t temp_l;
+	uint8_t temp_h;
+	int ret;
+
+	memset(result, 0, sizeof(*result));
+	result->ret = -ENODEV;
+
+	result->bus_ready = i2c_is_ready_dt(&imu_i2c);
+	if (!result->bus_ready) {
+		return;
+	}
+
+	ret = i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_WHO_AM_I,
+				   &result->who_am_i);
+	if (ret < 0) {
+		result->ret = ret;
+		return;
+	}
+
+	ret = i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL1_XL,
+				   &result->ctrl1_xl);
+	if (ret < 0) {
+		result->ret = ret;
+		return;
+	}
+
+	ret = i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_OUT_TEMP_L, &temp_l);
+	if (ret < 0) {
+		result->ret = ret;
+		return;
+	}
+
+	ret = i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_OUT_TEMP_L + 1,
+				   &temp_h);
+	if (ret < 0) {
+		result->ret = ret;
+		return;
+	}
+
+	result->raw_temperature =
+		(int16_t)((uint16_t)temp_l | ((uint16_t)temp_h << 8));
+	result->temperature_mc =
+		25000 + (((int32_t)result->raw_temperature * 1000) / 16);
+	result->ret = 0;
+}
+
 static bool init_led(void)
 {
 	int ret;
@@ -298,6 +370,32 @@ static bool init_a4_pwm(void)
 
 	ret = pwm_set_dt(&pwm_a4, pwm_a4.period, pulse_ns);
 	return ret == 0;
+}
+
+static int set_heater_pwm_duty(uint32_t duty_percent)
+{
+	uint32_t pulse_ns = (heater_pwm.period * duty_percent) / 100U;
+	int ret;
+
+	if (!heater_pwm_ready) {
+		return -ENODEV;
+	}
+
+	ret = pwm_set_dt(&heater_pwm, heater_pwm.period, pulse_ns);
+	heater_pwm_duty_percent = duty_percent;
+	heater_pwm_ret = ret;
+	return ret;
+}
+
+static bool init_heater_pwm(void)
+{
+	if (!pwm_is_ready_dt(&heater_pwm)) {
+		heater_pwm_ret = -ENODEV;
+		return false;
+	}
+
+	heater_pwm_ready = true;
+	return set_heater_pwm_duty(HEATER_PWM_LOW_DUTY_PERCENT) == 0;
 }
 
 static bool init_adc(void)
@@ -479,6 +577,45 @@ static void print_status(uint32_t loop_count, uint32_t dtr, uint32_t baudrate,
 		cdc_printf("  A4/D4/PB7   : not-ready\r\n");
 	}
 
+	cdc_printf("[HEATER PWM]\r\n");
+	if (heater_pwm_ready) {
+		cdc_printf("  PA8/TIM1_CH1: period=%u ns, duty=%u%%, set_ret=%d\r\n",
+			   heater_pwm.period, heater_pwm_duty_percent,
+			   heater_pwm_ret);
+		cdc_printf("  Test mode   : alternating fixed %u%%/%u%% every %u ms\r\n",
+			   HEATER_PWM_LOW_DUTY_PERCENT,
+			   HEATER_PWM_HIGH_DUTY_PERCENT, PRINT_PERIOD_MS);
+	} else {
+		cdc_printf("  PA8/TIM1_CH1: not-ready, set_ret=%d\r\n",
+			   heater_pwm_ret);
+	}
+
+	cdc_printf("[IMU TEMP]\r\n");
+	{
+		struct imu_temp_result imu_temp;
+
+		read_imu_temperature(&imu_temp);
+		if (imu_temp.ret < 0) {
+			cdc_printf("  I2C         : %s, read failed (%d)\r\n",
+				   imu_temp.bus_ready ? "ready" : "not-ready",
+				   imu_temp.ret);
+		} else {
+			int32_t temp_abs = imu_temp.temperature_mc < 0 ?
+					   -imu_temp.temperature_mc :
+					   imu_temp.temperature_mc;
+
+			cdc_printf("  I2C         : ready, polled register read\r\n");
+			cdc_printf("  Registers   : WHO_AM_I=0x%02x (expect 0x%02x), CTRL1_XL=0x%02x\r\n",
+				   imu_temp.who_am_i,
+				   LSM6DSL_WHO_AM_I_EXPECTED,
+				   imu_temp.ctrl1_xl);
+			cdc_printf("  Temperature : raw=%d LSB, %s%d.%03d C\r\n",
+				   imu_temp.raw_temperature,
+				   imu_temp.temperature_mc < 0 ? "-" : "",
+				   temp_abs / 1000, temp_abs % 1000);
+		}
+	}
+
 	cdc_printf("[BAT]\r\n");
 	if (battery_ready) {
 		uint16_t raw;
@@ -552,6 +689,7 @@ int main(void)
 
 	adc_ready = init_adc();
 	pwm_ready = init_a4_pwm();
+	heater_pwm_ready = init_heater_pwm();
 	battery_ready = init_battery();
 	flash_ready = init_flash();
 	cdc_ready = init_cdc();
@@ -561,6 +699,11 @@ int main(void)
 		uint32_t baudrate = 0U;
 		struct flash_cycle_result flash_result;
 		const struct flash_cycle_result *flash_report = NULL;
+		uint32_t heater_target_duty =
+			(loop_count % 2U) == 0U ? HEATER_PWM_LOW_DUTY_PERCENT :
+						  HEATER_PWM_HIGH_DUTY_PERCENT;
+
+		(void)set_heater_pwm_duty(heater_target_duty);
 
 		if (flash_ready) {
 			run_flash_cycle(flash_cycle, &flash_result);
