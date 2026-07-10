@@ -30,6 +30,7 @@
 #define HEATER_NODE DT_ALIAS(imu_heater)
 #define IMU_NODE DT_ALIAS(imu0)
 #define EXT_FLASH_NODE DT_NODELABEL(ext_flash)
+#define CAN_PHY_NODE DT_NODELABEL(can_phy0)
 
 #if !DT_NODE_EXISTS(DT_PATH(zephyr_user)) || \
 	!DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
@@ -85,6 +86,8 @@ static const struct device *const cdc_dev =
 	DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 static const struct gpio_dt_spec bat_en = GPIO_DT_SPEC_GET(BAT_EN_NODE, gpios);
+static const struct gpio_dt_spec can_standby =
+	GPIO_DT_SPEC_GET(CAN_PHY_NODE, standby_gpios);
 static const struct gpio_dt_spec imu_int = GPIO_DT_SPEC_GET(IMU_NODE,
 							    irq_gpios);
 static const struct pwm_dt_spec pwm_a4 = PWM_DT_SPEC_GET(PWM_A4_NODE);
@@ -124,6 +127,8 @@ static bool pwm_ready;
 static bool heater_pwm_ready;
 static bool battery_ready;
 static bool flash_ready;
+static bool can_phy_ready;
+static int can_standby_ret;
 static uint32_t heater_pwm_duty_permille;
 static int heater_pwm_ret;
 static int imu_init_ret;
@@ -674,6 +679,18 @@ static bool init_led(void)
 	return ret == 0;
 }
 
+static bool init_can_transceiver(void)
+{
+	if (!gpio_is_ready_dt(&can_standby)) {
+		can_standby_ret = -ENODEV;
+		return false;
+	}
+
+	can_standby_ret = gpio_pin_configure_dt(&can_standby,
+						GPIO_OUTPUT_INACTIVE);
+	return can_standby_ret == 0;
+}
+
 static bool init_a4_pwm(void)
 {
 	uint32_t pulse_ns = (pwm_a4.period * A4_PWM_DUTY_PERCENT) / 100U;
@@ -986,6 +1003,15 @@ static void print_status(uint32_t loop_count, uint32_t dtr, uint32_t baudrate,
 			   heater_pwm_ret);
 	}
 
+	cdc_printf("[CAN PHY]\r\n");
+	if (can_phy_ready) {
+		cdc_printf("  CAN_STB/PB14: LOW, transceiver=enabled, set_ret=%d\r\n",
+			   can_standby_ret);
+	} else {
+		cdc_printf("  CAN_STB/PB14: not-ready, set_ret=%d\r\n",
+			   can_standby_ret);
+	}
+
 	cdc_printf("[IMU TEMP]\r\n");
 	{
 		struct imu_temp_result *imu_temp = &imu_pid_status.temperature;
@@ -1130,6 +1156,7 @@ int main(void)
 	adc_ready = init_adc();
 	pwm_ready = init_a4_pwm();
 	heater_pwm_ready = init_heater_pwm();
+	can_phy_ready = init_can_transceiver();
 	battery_ready = init_battery();
 	flash_ready = init_flash();
 	cdc_ready = init_cdc();
