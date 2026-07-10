@@ -7,7 +7,6 @@ Small bring-up sample with only:
 - A0-A3 ADC voltage printing every 5 seconds
 - A4/D4/PB7 PWM output at 1 kHz, 50% duty
 - IMU temperature PI compensation with direct polled I2C temperature reads and PA8/TIM1_CH1 heater PWM
-- IMU accel/gyro physical-unit readout using the LSM6DS3TR-C INT1 data-ready GPIO interrupt
 - Battery voltage readout through BAT_EN/PE2 and BAT_Reading/PA4
 - External flash erase/write/read/verify every 5 seconds
 
@@ -28,11 +27,10 @@ Behavior:
 - No banner is printed.
 - The user LED toggles in its own thread every 500 ms and does not depend on the USB CDC port being open.
 - USB CDC output is attempted every 5 seconds; DTR is printed only as a diagnostic state.
-- Each 5-second report is grouped as `[USB]`, `[LED]`, `[ADC A0-A3]`, `[PWM]`, `[HEATER PWM]`, `[IMU TEMP]`, `[IMU DATA IRQ]`, `[BAT]`, and `[FLASH]`.
+- Each 5-second report is grouped as `[USB]`, `[LED]`, `[ADC A0-A3]`, `[PWM]`, `[HEATER PWM]`, `[IMU TEMP]`, `[BAT]`, and `[FLASH]`.
 - A4/D4 is the XIAO header PB7 pin. Battery sense uses internal PA4/ADC1_IN4, not PB7.
 - Heater PWM uses the board `imu-heater` alias on PA8/TIM1_CH1.
 - IMU temperature compensation runs every 500 ms, targets 40 C, and limits heater duty to 60%.
 - IMU temperature uses direct I2C register polling on the board `imu0` alias. It initializes `CTRL1_XL` to 12.5 Hz when the IMU is in power-down and converts temperature as `25 + raw / 256`, matching the Zephyr LSM6DSL temperature driver behavior.
-- IMU accel/gyro data uses the board `imu0` `irq-gpios` pin, PC13, as a GPIO edge interrupt. The ISR only schedules work; the work handler reads accel/gyro registers over I2C and prints accel in `m/s^2` and gyro in `dps`.
-- This does not enable Zephyr sensor drivers or sensor triggers.
+- This does not enable IMU interrupts, sensor drivers, or sensor triggers.
 - Flash test uses external flash offset `0x00100000`, writes 256 bytes, reads them back, and prints verify status.
