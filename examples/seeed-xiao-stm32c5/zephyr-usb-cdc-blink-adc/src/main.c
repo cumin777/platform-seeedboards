@@ -20,6 +20,7 @@
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/ring_buffer.h>
 #include <zephyr/sys/util.h>
 
@@ -64,16 +65,32 @@
 #define TX_RING_BUF_SIZE 2048
 #define PRINT_BUF_SIZE 512
 #define LSM6DSL_REG_WHO_AM_I 0x0f
+#define LSM6DSL_REG_INT1_CTRL 0x0d
 #define LSM6DSL_REG_CTRL1_XL 0x10
+#define LSM6DSL_REG_CTRL2_G 0x11
+#define LSM6DSL_REG_CTRL3_C 0x12
 #define LSM6DSL_REG_OUT_TEMP_L 0x20
+#define LSM6DSL_REG_OUTX_L_G 0x22
+#define LSM6DSL_REG_OUTX_L_XL 0x28
 #define LSM6DSL_WHO_AM_I_EXPECTED 0x6a
 #define LSM6DSL_CTRL1_XL_ODR_MASK 0xf0
 #define LSM6DSL_CTRL1_XL_ODR_12_5HZ 0x10
+#define LSM6DSL_CTRL2_G_ODR_MASK 0xf0
+#define LSM6DSL_CTRL2_G_ODR_12_5HZ 0x10
+#define LSM6DSL_CTRL3_C_BDU BIT(6)
+#define LSM6DSL_CTRL3_C_IF_INC BIT(2)
+#define LSM6DSL_INT1_DRDY_XL BIT(0)
+#define LSM6DSL_INT1_DRDY_G BIT(1)
+#define IMU_ACCEL_2G_UG_PER_LSB 61
+#define IMU_STANDARD_GRAVITY_UMS2 9806650
+#define IMU_GYRO_250DPS_UDPS_PER_LSB 8750
 
 static const struct device *const cdc_dev =
 	DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 static const struct gpio_dt_spec bat_en = GPIO_DT_SPEC_GET(BAT_EN_NODE, gpios);
+static const struct gpio_dt_spec imu_int = GPIO_DT_SPEC_GET(IMU_NODE,
+							    irq_gpios);
 static const struct pwm_dt_spec pwm_a4 = PWM_DT_SPEC_GET(PWM_A4_NODE);
 static const struct pwm_dt_spec heater_pwm = PWM_DT_SPEC_GET(HEATER_NODE);
 static const struct i2c_dt_spec imu_i2c = I2C_DT_SPEC_GET(IMU_NODE);
@@ -158,10 +175,38 @@ struct imu_pid_report {
 	int control_ret;
 };
 
+struct imu_axis_raw {
+	int16_t x;
+	int16_t y;
+	int16_t z;
+};
+
+struct imu_data_status {
+	bool ready;
+	int init_ret;
+	int last_read_ret;
+	uint32_t irq_count;
+	uint32_t work_count;
+	struct imu_axis_raw accel;
+	struct imu_axis_raw gyro;
+	uint8_t int1_ctrl;
+	uint8_t ctrl1_xl;
+	uint8_t ctrl2_g;
+	uint8_t ctrl3_c;
+};
+
 static struct k_thread led_thread_data;
 static struct imu_pid_state imu_pid;
 static struct imu_pid_report imu_pid_status;
+static struct imu_data_status imu_data;
+static struct gpio_callback imu_int_cb;
+static struct k_work imu_data_work;
+static atomic_t imu_irq_count;
 K_THREAD_STACK_DEFINE(led_stack, 512);
+
+static void imu_data_work_handler(struct k_work *work);
+static void imu_int_handler(const struct device *dev,
+			    struct gpio_callback *cb, uint32_t pins);
 
 static uint32_t cdc_tx_put(const uint8_t *buf, uint32_t len)
 {
@@ -334,6 +379,8 @@ static int init_imu_temperature(void)
 {
 	uint8_t who_am_i;
 	uint8_t ctrl1_xl;
+	uint8_t ctrl2_g;
+	uint8_t ctrl3_c;
 	int ret;
 
 	imu_init_ret = -ENODEV;
@@ -371,6 +418,44 @@ static int init_imu_temperature(void)
 		}
 	}
 
+	ret = i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL2_G, &ctrl2_g);
+	if (ret < 0) {
+		imu_init_ret = ret;
+		return ret;
+	}
+
+	if ((ctrl2_g & LSM6DSL_CTRL2_G_ODR_MASK) == 0U) {
+		ctrl2_g = (ctrl2_g & ~LSM6DSL_CTRL2_G_ODR_MASK) |
+			  LSM6DSL_CTRL2_G_ODR_12_5HZ;
+		ret = i2c_reg_write_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL2_G,
+					    ctrl2_g);
+		if (ret < 0) {
+			imu_init_ret = ret;
+			return ret;
+		}
+	}
+
+	ret = i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL3_C, &ctrl3_c);
+	if (ret < 0) {
+		imu_init_ret = ret;
+		return ret;
+	}
+
+	ctrl3_c |= LSM6DSL_CTRL3_C_BDU | LSM6DSL_CTRL3_C_IF_INC;
+	ret = i2c_reg_write_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL3_C, ctrl3_c);
+	if (ret < 0) {
+		imu_init_ret = ret;
+		return ret;
+	}
+
+	ret = i2c_reg_write_byte_dt(&imu_i2c, LSM6DSL_REG_INT1_CTRL,
+				    LSM6DSL_INT1_DRDY_XL |
+				    LSM6DSL_INT1_DRDY_G);
+	if (ret < 0) {
+		imu_init_ret = ret;
+		return ret;
+	}
+
 	ret = i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL1_XL,
 				   &imu_init_ctrl1_xl);
 	if (ret < 0) {
@@ -379,6 +464,57 @@ static int init_imu_temperature(void)
 	}
 
 	imu_init_ret = 0;
+	return 0;
+}
+
+static int init_imu_data_interrupt(void)
+{
+	int ret;
+
+	memset(&imu_data, 0, sizeof(imu_data));
+	imu_data.init_ret = -ENODEV;
+
+	if (!gpio_is_ready_dt(&imu_int)) {
+		return imu_data.init_ret;
+	}
+
+	if (!i2c_is_ready_dt(&imu_i2c)) {
+		return imu_data.init_ret;
+	}
+
+	ret = gpio_pin_configure_dt(&imu_int, GPIO_INPUT);
+	if (ret < 0) {
+		imu_data.init_ret = ret;
+		return ret;
+	}
+
+	k_work_init(&imu_data_work, imu_data_work_handler);
+	gpio_init_callback(&imu_int_cb, imu_int_handler, BIT(imu_int.pin));
+
+	ret = gpio_add_callback(imu_int.port, &imu_int_cb);
+	if (ret < 0) {
+		imu_data.init_ret = ret;
+		return ret;
+	}
+
+	ret = gpio_pin_interrupt_configure_dt(&imu_int, GPIO_INT_EDGE_TO_ACTIVE);
+	if (ret < 0) {
+		imu_data.init_ret = ret;
+		return ret;
+	}
+
+	(void)i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_INT1_CTRL,
+				   &imu_data.int1_ctrl);
+	(void)i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL1_XL,
+				   &imu_data.ctrl1_xl);
+	(void)i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL2_G,
+				   &imu_data.ctrl2_g);
+	(void)i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL3_C,
+				   &imu_data.ctrl3_c);
+
+	imu_data.ready = true;
+	imu_data.init_ret = 0;
+	(void)k_work_submit(&imu_data_work);
 	return 0;
 }
 
@@ -428,6 +564,107 @@ static void read_imu_temperature(struct imu_temp_result *result)
 	result->temperature_mc =
 		25000 + (((int32_t)result->raw_temperature * 1000) / 256);
 	result->ret = 0;
+}
+
+static struct imu_axis_raw imu_unpack_axis(const uint8_t *buf)
+{
+	return (struct imu_axis_raw) {
+		.x = (int16_t)((uint16_t)buf[0] | ((uint16_t)buf[1] << 8)),
+		.y = (int16_t)((uint16_t)buf[2] | ((uint16_t)buf[3] << 8)),
+		.z = (int16_t)((uint16_t)buf[4] | ((uint16_t)buf[5] << 8)),
+	};
+}
+
+static int read_imu_axes(struct imu_axis_raw *accel, struct imu_axis_raw *gyro)
+{
+	uint8_t buf[6];
+	int ret;
+
+	ret = i2c_burst_read_dt(&imu_i2c, LSM6DSL_REG_OUTX_L_G, buf,
+				sizeof(buf));
+	if (ret < 0) {
+		return ret;
+	}
+	*gyro = imu_unpack_axis(buf);
+
+	ret = i2c_burst_read_dt(&imu_i2c, LSM6DSL_REG_OUTX_L_XL, buf,
+				sizeof(buf));
+	if (ret < 0) {
+		return ret;
+	}
+	*accel = imu_unpack_axis(buf);
+
+	return 0;
+}
+
+static void imu_data_work_handler(struct k_work *work)
+{
+	struct imu_axis_raw accel;
+	struct imu_axis_raw gyro;
+	int ret;
+
+	ARG_UNUSED(work);
+
+	ret = read_imu_axes(&accel, &gyro);
+	imu_data.last_read_ret = ret;
+	imu_data.irq_count = (uint32_t)atomic_get(&imu_irq_count);
+
+	if (ret < 0) {
+		return;
+	}
+
+	imu_data.accel = accel;
+	imu_data.gyro = gyro;
+	imu_data.work_count++;
+}
+
+static void imu_int_handler(const struct device *dev,
+			    struct gpio_callback *cb, uint32_t pins)
+{
+	ARG_UNUSED(dev);
+	ARG_UNUSED(cb);
+	ARG_UNUSED(pins);
+
+	atomic_inc(&imu_irq_count);
+	(void)k_work_submit(&imu_data_work);
+}
+
+static int32_t axis_abs_i32(int32_t value)
+{
+	return value < 0 ? -value : value;
+}
+
+static int32_t accel_raw_to_micro_ms2(int16_t raw)
+{
+	int64_t micro_ms2 = (int64_t)raw * IMU_ACCEL_2G_UG_PER_LSB *
+			    IMU_STANDARD_GRAVITY_UMS2;
+
+	return (int32_t)(micro_ms2 / 1000000LL);
+}
+
+static int32_t gyro_raw_to_micro_dps(int16_t raw)
+{
+	return (int32_t)raw * IMU_GYRO_250DPS_UDPS_PER_LSB;
+}
+
+static void cdc_print_fixed_micro(int32_t value)
+{
+	int32_t abs_value = axis_abs_i32(value);
+
+	cdc_printf("%s%d.%06d", value < 0 ? "-" : "",
+		   abs_value / 1000000, abs_value % 1000000);
+}
+
+static void cdc_print_axis_micro(const char *label, int32_t x, int32_t y,
+				 int32_t z, const char *unit)
+{
+	cdc_printf("  %-11s : x=", label);
+	cdc_print_fixed_micro(x);
+	cdc_printf(", y=");
+	cdc_print_fixed_micro(y);
+	cdc_printf(", z=");
+	cdc_print_fixed_micro(z);
+	cdc_printf(" %s\r\n", unit);
 }
 
 static bool init_led(void)
@@ -803,6 +1040,29 @@ static void print_status(uint32_t loop_count, uint32_t dtr, uint32_t baudrate,
 		}
 	}
 
+	cdc_printf("[IMU DATA IRQ]\r\n");
+	if (imu_data.ready) {
+		imu_data.irq_count = (uint32_t)atomic_get(&imu_irq_count);
+		cdc_printf("  INT1/PC13   : ready, irq=%u, work=%u, read_ret=%d\r\n",
+			   imu_data.irq_count, imu_data.work_count,
+			   imu_data.last_read_ret);
+		cdc_printf("  Registers   : INT1_CTRL=0x%02x, CTRL1_XL=0x%02x, CTRL2_G=0x%02x, CTRL3_C=0x%02x\r\n",
+			   imu_data.int1_ctrl, imu_data.ctrl1_xl,
+			   imu_data.ctrl2_g, imu_data.ctrl3_c);
+		cdc_printf("  Scale       : accel=+/-2g, gyro=+/-250 dps\r\n");
+		cdc_print_axis_micro("Accel", accel_raw_to_micro_ms2(imu_data.accel.x),
+				     accel_raw_to_micro_ms2(imu_data.accel.y),
+				     accel_raw_to_micro_ms2(imu_data.accel.z),
+				     "m/s^2");
+		cdc_print_axis_micro("Gyro", gyro_raw_to_micro_dps(imu_data.gyro.x),
+				     gyro_raw_to_micro_dps(imu_data.gyro.y),
+				     gyro_raw_to_micro_dps(imu_data.gyro.z),
+				     "dps");
+	} else {
+		cdc_printf("  INT1/PC13   : not-ready, init_ret=%d, read_ret=%d\r\n",
+			   imu_data.init_ret, imu_data.last_read_ret);
+	}
+
 	cdc_printf("[BAT]\r\n");
 	if (battery_ready) {
 		uint16_t raw;
@@ -882,6 +1142,7 @@ int main(void)
 	flash_ready = init_flash();
 	cdc_ready = init_cdc();
 	(void)init_imu_temperature();
+	(void)init_imu_data_interrupt();
 
 	while (true) {
 		run_imu_pid_step();
