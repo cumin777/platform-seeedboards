@@ -21,6 +21,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/ring_buffer.h>
+#include <zephyr/sys/util.h>
 
 #define LED0_NODE DT_ALIAS(led0)
 #define BAT_EN_NODE DT_ALIAS(baten)
@@ -49,8 +50,15 @@
 #define LED_PERIOD_MS 500
 #define PRINT_PERIOD_MS 5000
 #define A4_PWM_DUTY_PERCENT 50U
-#define HEATER_PWM_LOW_DUTY_PERCENT 0U
-#define HEATER_PWM_HIGH_DUTY_PERCENT 10U
+#define IMU_TARGET_TEMPERATURE_MC 40000
+#define IMU_CONTROL_INTERVAL_MS 500
+#define IMU_DUTY_MIN_PERMILLE 0
+#define IMU_DUTY_MAX_PERMILLE 600
+#define IMU_DUTY_STEP_PERMILLE 50
+#define IMU_FILTER_SHIFT 2
+#define IMU_KP_PER_MILLE_PER_C 25
+#define IMU_KI_PER_MILLE_PER_C_S 2
+#define IMU_INTEGRAL_LIMIT_MC_S 180000
 #define FLASH_TEST_OFFSET 0x00100000
 #define FLASH_TEST_LEN 256
 #define TX_RING_BUF_SIZE 2048
@@ -59,6 +67,8 @@
 #define LSM6DSL_REG_CTRL1_XL 0x10
 #define LSM6DSL_REG_OUT_TEMP_L 0x20
 #define LSM6DSL_WHO_AM_I_EXPECTED 0x6a
+#define LSM6DSL_CTRL1_XL_ODR_MASK 0xf0
+#define LSM6DSL_CTRL1_XL_ODR_12_5HZ 0x10
 
 static const struct device *const cdc_dev =
 	DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
@@ -101,8 +111,10 @@ static bool pwm_ready;
 static bool heater_pwm_ready;
 static bool battery_ready;
 static bool flash_ready;
-static uint32_t heater_pwm_duty_percent;
+static uint32_t heater_pwm_duty_permille;
 static int heater_pwm_ret;
+static int imu_init_ret;
+static uint8_t imu_init_ctrl1_xl;
 static struct flash_pages_info flash_page;
 static uint8_t flash_write_buf[FLASH_TEST_LEN];
 static uint8_t flash_read_buf[FLASH_TEST_LEN];
@@ -129,7 +141,26 @@ struct imu_temp_result {
 	int32_t temperature_mc;
 };
 
+struct imu_pid_state {
+	int32_t integral_mc_s;
+	int32_t filtered_temperature_mc;
+	uint32_t previous_duty_permille;
+	bool filter_ready;
+};
+
+struct imu_pid_report {
+	struct imu_temp_result temperature;
+	int32_t filtered_temperature_mc;
+	int32_t error_mc;
+	int32_t integral_mc_s;
+	uint32_t duty_permille;
+	uint32_t sample_count;
+	int control_ret;
+};
+
 static struct k_thread led_thread_data;
+static struct imu_pid_state imu_pid;
+static struct imu_pid_report imu_pid_status;
 K_THREAD_STACK_DEFINE(led_stack, 512);
 
 static uint32_t cdc_tx_put(const uint8_t *buf, uint32_t len)
@@ -299,6 +330,58 @@ static int read_battery_average(uint16_t *raw_avg, int32_t *adc_mv,
 	return 0;
 }
 
+static int init_imu_temperature(void)
+{
+	uint8_t who_am_i;
+	uint8_t ctrl1_xl;
+	int ret;
+
+	imu_init_ret = -ENODEV;
+	imu_init_ctrl1_xl = 0;
+
+	if (!i2c_is_ready_dt(&imu_i2c)) {
+		return imu_init_ret;
+	}
+
+	ret = i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_WHO_AM_I, &who_am_i);
+	if (ret < 0) {
+		imu_init_ret = ret;
+		return ret;
+	}
+
+	if (who_am_i != LSM6DSL_WHO_AM_I_EXPECTED) {
+		imu_init_ret = -EIO;
+		return imu_init_ret;
+	}
+
+	ret = i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL1_XL, &ctrl1_xl);
+	if (ret < 0) {
+		imu_init_ret = ret;
+		return ret;
+	}
+
+	if ((ctrl1_xl & LSM6DSL_CTRL1_XL_ODR_MASK) == 0U) {
+		ctrl1_xl = (ctrl1_xl & ~LSM6DSL_CTRL1_XL_ODR_MASK) |
+			   LSM6DSL_CTRL1_XL_ODR_12_5HZ;
+		ret = i2c_reg_write_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL1_XL,
+					    ctrl1_xl);
+		if (ret < 0) {
+			imu_init_ret = ret;
+			return ret;
+		}
+	}
+
+	ret = i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL1_XL,
+				   &imu_init_ctrl1_xl);
+	if (ret < 0) {
+		imu_init_ret = ret;
+		return ret;
+	}
+
+	imu_init_ret = 0;
+	return 0;
+}
+
 static void read_imu_temperature(struct imu_temp_result *result)
 {
 	uint8_t temp_l;
@@ -343,7 +426,7 @@ static void read_imu_temperature(struct imu_temp_result *result)
 	result->raw_temperature =
 		(int16_t)((uint16_t)temp_l | ((uint16_t)temp_h << 8));
 	result->temperature_mc =
-		25000 + (((int32_t)result->raw_temperature * 1000) / 16);
+		25000 + (((int32_t)result->raw_temperature * 1000) / 256);
 	result->ret = 0;
 }
 
@@ -372,17 +455,18 @@ static bool init_a4_pwm(void)
 	return ret == 0;
 }
 
-static int set_heater_pwm_duty(uint32_t duty_percent)
+static int set_heater_pwm_duty(uint32_t duty_permille)
 {
-	uint32_t pulse_ns = (heater_pwm.period * duty_percent) / 100U;
+	uint32_t pulse_ns = (heater_pwm.period * duty_permille) / 1000U;
 	int ret;
 
 	if (!heater_pwm_ready) {
+		heater_pwm_ret = -ENODEV;
 		return -ENODEV;
 	}
 
 	ret = pwm_set_dt(&heater_pwm, heater_pwm.period, pulse_ns);
-	heater_pwm_duty_percent = duty_percent;
+	heater_pwm_duty_permille = duty_permille;
 	heater_pwm_ret = ret;
 	return ret;
 }
@@ -395,7 +479,87 @@ static bool init_heater_pwm(void)
 	}
 
 	heater_pwm_ready = true;
-	return set_heater_pwm_duty(HEATER_PWM_LOW_DUTY_PERCENT) == 0;
+	return set_heater_pwm_duty(IMU_DUTY_MIN_PERMILLE) == 0;
+}
+
+static uint32_t apply_imu_duty_slew_limit(struct imu_pid_state *pid,
+					  uint32_t duty_permille)
+{
+	uint32_t previous = pid->previous_duty_permille;
+
+	if (duty_permille > previous + IMU_DUTY_STEP_PERMILLE) {
+		duty_permille = previous + IMU_DUTY_STEP_PERMILLE;
+	} else if (previous > duty_permille + IMU_DUTY_STEP_PERMILLE) {
+		duty_permille = previous - IMU_DUTY_STEP_PERMILLE;
+	}
+
+	pid->previous_duty_permille = duty_permille;
+	return duty_permille;
+}
+
+static uint32_t update_imu_pi(struct imu_pid_state *pid, int32_t temperature_mc,
+			      int32_t *filtered_temperature_mc,
+			      int32_t *error_mc)
+{
+	int32_t p_term;
+	int32_t i_term;
+	int32_t output_permille;
+
+	if (!pid->filter_ready) {
+		pid->filtered_temperature_mc = temperature_mc;
+		pid->filter_ready = true;
+	} else {
+		pid->filtered_temperature_mc +=
+			(temperature_mc - pid->filtered_temperature_mc) >>
+			IMU_FILTER_SHIFT;
+	}
+
+	*filtered_temperature_mc = pid->filtered_temperature_mc;
+	*error_mc = IMU_TARGET_TEMPERATURE_MC - pid->filtered_temperature_mc;
+
+	pid->integral_mc_s += (*error_mc * IMU_CONTROL_INTERVAL_MS) / 1000;
+	pid->integral_mc_s = CLAMP(pid->integral_mc_s,
+				   -IMU_INTEGRAL_LIMIT_MC_S,
+				   IMU_INTEGRAL_LIMIT_MC_S);
+
+	p_term = (IMU_KP_PER_MILLE_PER_C * *error_mc) / 1000;
+	i_term = (IMU_KI_PER_MILLE_PER_C_S * pid->integral_mc_s) / 1000;
+	output_permille = CLAMP(p_term + i_term, IMU_DUTY_MIN_PERMILLE,
+				IMU_DUTY_MAX_PERMILLE);
+
+	return apply_imu_duty_slew_limit(pid, (uint32_t)output_permille);
+}
+
+static void run_imu_pid_step(void)
+{
+	struct imu_temp_result temperature;
+	uint32_t duty_permille;
+
+	read_imu_temperature(&temperature);
+	imu_pid_status.temperature = temperature;
+
+	if (temperature.ret < 0 ||
+	    temperature.who_am_i != LSM6DSL_WHO_AM_I_EXPECTED) {
+		imu_pid.previous_duty_permille = 0;
+		imu_pid_status.control_ret = temperature.ret < 0 ?
+					     temperature.ret : -EIO;
+		imu_pid_status.duty_permille = 0;
+		(void)set_heater_pwm_duty(0);
+		return;
+	}
+
+	duty_permille = update_imu_pi(&imu_pid, temperature.temperature_mc,
+				      &imu_pid_status.filtered_temperature_mc,
+				      &imu_pid_status.error_mc);
+
+	imu_pid_status.control_ret = set_heater_pwm_duty(duty_permille);
+	if (imu_pid_status.control_ret < 0) {
+		duty_permille = 0;
+	}
+
+	imu_pid_status.integral_mc_s = imu_pid.integral_mc_s;
+	imu_pid_status.duty_permille = duty_permille;
+	imu_pid_status.sample_count++;
 }
 
 static bool init_adc(void)
@@ -579,12 +743,12 @@ static void print_status(uint32_t loop_count, uint32_t dtr, uint32_t baudrate,
 
 	cdc_printf("[HEATER PWM]\r\n");
 	if (heater_pwm_ready) {
-		cdc_printf("  PA8/TIM1_CH1: period=%u ns, duty=%u%%, set_ret=%d\r\n",
-			   heater_pwm.period, heater_pwm_duty_percent,
+		cdc_printf("  PA8/TIM1_CH1: period=%u ns, duty=%u.%u%%, set_ret=%d\r\n",
+			   heater_pwm.period, heater_pwm_duty_permille / 10,
+			   heater_pwm_duty_permille % 10,
 			   heater_pwm_ret);
-		cdc_printf("  Test mode   : alternating fixed %u%%/%u%% every %u ms\r\n",
-			   HEATER_PWM_LOW_DUTY_PERCENT,
-			   HEATER_PWM_HIGH_DUTY_PERCENT, PRINT_PERIOD_MS);
+		cdc_printf("  Control     : PI temperature compensation, interval=%u ms\r\n",
+			   IMU_CONTROL_INTERVAL_MS);
 	} else {
 		cdc_printf("  PA8/TIM1_CH1: not-ready, set_ret=%d\r\n",
 			   heater_pwm_ret);
@@ -592,27 +756,50 @@ static void print_status(uint32_t loop_count, uint32_t dtr, uint32_t baudrate,
 
 	cdc_printf("[IMU TEMP]\r\n");
 	{
-		struct imu_temp_result imu_temp;
+		struct imu_temp_result *imu_temp = &imu_pid_status.temperature;
 
-		read_imu_temperature(&imu_temp);
-		if (imu_temp.ret < 0) {
+		if (imu_temp->ret < 0) {
 			cdc_printf("  I2C         : %s, read failed (%d)\r\n",
-				   imu_temp.bus_ready ? "ready" : "not-ready",
-				   imu_temp.ret);
+				   imu_temp->bus_ready ? "ready" : "not-ready",
+				   imu_temp->ret);
 		} else {
-			int32_t temp_abs = imu_temp.temperature_mc < 0 ?
-					   -imu_temp.temperature_mc :
-					   imu_temp.temperature_mc;
+			int32_t temp_abs = imu_temp->temperature_mc < 0 ?
+					   -imu_temp->temperature_mc :
+					   imu_temp->temperature_mc;
+			int32_t filtered_abs =
+				imu_pid_status.filtered_temperature_mc < 0 ?
+				-imu_pid_status.filtered_temperature_mc :
+				imu_pid_status.filtered_temperature_mc;
+			int32_t error_abs = imu_pid_status.error_mc < 0 ?
+					    -imu_pid_status.error_mc :
+					    imu_pid_status.error_mc;
 
 			cdc_printf("  I2C         : ready, polled register read\r\n");
+			cdc_printf("  Init        : ret=%d, CTRL1_XL=0x%02x\r\n",
+				   imu_init_ret, imu_init_ctrl1_xl);
 			cdc_printf("  Registers   : WHO_AM_I=0x%02x (expect 0x%02x), CTRL1_XL=0x%02x\r\n",
-				   imu_temp.who_am_i,
+				   imu_temp->who_am_i,
 				   LSM6DSL_WHO_AM_I_EXPECTED,
-				   imu_temp.ctrl1_xl);
+				   imu_temp->ctrl1_xl);
 			cdc_printf("  Temperature : raw=%d LSB, %s%d.%03d C\r\n",
-				   imu_temp.raw_temperature,
-				   imu_temp.temperature_mc < 0 ? "-" : "",
+				   imu_temp->raw_temperature,
+				   imu_temp->temperature_mc < 0 ? "-" : "",
 				   temp_abs / 1000, temp_abs % 1000);
+			cdc_printf("  Filtered    : %s%d.%03d C, target=%d.%03d C\r\n",
+				   imu_pid_status.filtered_temperature_mc < 0 ?
+				   "-" : "", filtered_abs / 1000,
+				   filtered_abs % 1000,
+				   IMU_TARGET_TEMPERATURE_MC / 1000,
+				   IMU_TARGET_TEMPERATURE_MC % 1000);
+			cdc_printf("  Error       : %s%d.%03d C, samples=%u\r\n",
+				   imu_pid_status.error_mc < 0 ? "-" : "",
+				   error_abs / 1000, error_abs % 1000,
+				   imu_pid_status.sample_count);
+			cdc_printf("  PI          : kp=%u, ki=%u, integral=%d mC*s, control_ret=%d\r\n",
+				   IMU_KP_PER_MILLE_PER_C,
+				   IMU_KI_PER_MILLE_PER_C_S,
+				   imu_pid_status.integral_mc_s,
+				   imu_pid_status.control_ret);
 		}
 	}
 
@@ -677,7 +864,8 @@ static void print_status(uint32_t loop_count, uint32_t dtr, uint32_t baudrate,
 
 int main(void)
 {
-	uint32_t loop_count = 0;
+	uint32_t report_count = 0;
+	uint32_t control_tick = 0;
 	uint32_t flash_cycle = 0;
 	bool cdc_ready;
 
@@ -693,30 +881,34 @@ int main(void)
 	battery_ready = init_battery();
 	flash_ready = init_flash();
 	cdc_ready = init_cdc();
+	(void)init_imu_temperature();
 
 	while (true) {
-		uint32_t dtr = 0U;
-		uint32_t baudrate = 0U;
-		struct flash_cycle_result flash_result;
-		const struct flash_cycle_result *flash_report = NULL;
-		uint32_t heater_target_duty =
-			(loop_count % 2U) == 0U ? HEATER_PWM_LOW_DUTY_PERCENT :
-						  HEATER_PWM_HIGH_DUTY_PERCENT;
+		run_imu_pid_step();
 
-		(void)set_heater_pwm_duty(heater_target_duty);
+		if ((control_tick %
+		     (PRINT_PERIOD_MS / IMU_CONTROL_INTERVAL_MS)) == 0U) {
+			uint32_t dtr = 0U;
+			uint32_t baudrate = 0U;
+			struct flash_cycle_result flash_result;
+			const struct flash_cycle_result *flash_report = NULL;
 
-		if (flash_ready) {
-			run_flash_cycle(flash_cycle, &flash_result);
-			flash_report = &flash_result;
-			flash_cycle++;
+			if (flash_ready) {
+				run_flash_cycle(flash_cycle, &flash_result);
+				flash_report = &flash_result;
+				flash_cycle++;
+			}
+
+			if (cdc_ready && cdc_get_line_state(&dtr, &baudrate)) {
+				print_status(report_count, dtr, baudrate,
+					     flash_report);
+			}
+
+			report_count++;
 		}
 
-		if (cdc_ready && cdc_get_line_state(&dtr, &baudrate)) {
-			print_status(loop_count, dtr, baudrate, flash_report);
-		}
-
-		loop_count++;
-		k_msleep(PRINT_PERIOD_MS);
+		control_tick++;
+		k_msleep(IMU_CONTROL_INTERVAL_MS);
 	}
 
 	return 0;

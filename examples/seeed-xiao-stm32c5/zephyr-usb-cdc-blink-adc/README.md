@@ -6,8 +6,7 @@ Small bring-up sample with only:
 - User LED blink
 - A0-A3 ADC voltage printing every 5 seconds
 - A4/D4/PB7 PWM output at 1 kHz, 50% duty
-- IMU heater PA8/TIM1_CH1 PWM test alternating fixed 0%/10% duty
-- IMU temperature readout using direct polled I2C register reads
+- IMU temperature PI compensation with direct polled I2C temperature reads and PA8/TIM1_CH1 heater PWM
 - Battery voltage readout through BAT_EN/PE2 and BAT_Reading/PA4
 - External flash erase/write/read/verify every 5 seconds
 
@@ -31,5 +30,7 @@ Behavior:
 - Each 5-second report is grouped as `[USB]`, `[LED]`, `[ADC A0-A3]`, `[PWM]`, `[HEATER PWM]`, `[IMU TEMP]`, `[BAT]`, and `[FLASH]`.
 - A4/D4 is the XIAO header PB7 pin. Battery sense uses internal PA4/ADC1_IN4, not PB7.
 - Heater PWM uses the board `imu-heater` alias on PA8/TIM1_CH1.
-- IMU temperature uses direct I2C register polling on the board `imu0` alias. This test does not enable IMU interrupts, sensor drivers, sensor triggers, or PID control.
+- IMU temperature compensation runs every 500 ms, targets 40 C, and limits heater duty to 60%.
+- IMU temperature uses direct I2C register polling on the board `imu0` alias. It initializes `CTRL1_XL` to 12.5 Hz when the IMU is in power-down and converts temperature as `25 + raw / 256`, matching the Zephyr LSM6DSL temperature driver behavior.
+- This does not enable IMU interrupts, sensor drivers, or sensor triggers.
 - Flash test uses external flash offset `0x00100000`, writes 256 bytes, reads them back, and prints verify status.
