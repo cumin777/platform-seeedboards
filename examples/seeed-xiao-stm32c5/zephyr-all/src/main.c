@@ -23,6 +23,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/ring_buffer.h>
 #include <zephyr/sys/util.h>
 
@@ -84,8 +85,13 @@
 #define LSM6DSL_CTRL3_C_BDU BIT(6)
 #define LSM6DSL_CTRL3_C_IF_INC BIT(2)
 #define LSM6DSL_INT1_DRDY_XL BIT(0)
-#define CAN_NOMINAL_BITRATE 500000U
-#define CAN_DATA_BITRATE 2000000U
+#define CAN_NOMINAL_BITRATE 1000000U
+#define CAN_DATA_BITRATE 8000000U
+#define CAN_DATA_SAMPLE_POINT 800U
+#define CAN_LOOPBACK_ID 0x5a1U
+#define CAN_LOOPBACK_MAGIC 0xc5085a1U
+#define CAN_LOOPBACK_PAYLOAD_LEN 16U
+#define CAN_LOOPBACK_TIMEOUT_MS 200U
 
 static const struct device *const cdc_dev =
 	DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
@@ -145,6 +151,20 @@ static int can_start_ret;
 static int can_state_ret;
 static enum can_state can_last_state = CAN_STATE_STOPPED;
 static struct can_bus_err_cnt can_last_err;
+static K_SEM_DEFINE(can_loopback_rx_sem, 0, 1);
+static int can_core_clock_ret;
+static uint32_t can_core_clock_hz;
+static int can_loopback_filter_ret;
+static int can_loopback_mode_ret;
+static int can_loopback_bitrate_ret;
+static int can_loopback_data_bitrate_ret;
+static int can_loopback_start_ret;
+static int can_loopback_tx_ret;
+static int can_loopback_rx_wait_ret;
+static int can_loopback_stop_ret;
+static uint32_t can_data_tq;
+static uint32_t can_data_sample_point_permille;
+static bool can_loopback_frame_valid;
 static uint32_t heater_pwm_duty_permille;
 static int heater_pwm_ret;
 static int imu_init_ret;
@@ -730,16 +750,149 @@ static void update_can_state(void)
 	can_state_ret = can_get_state(can_dev, &can_last_state, &can_last_err);
 }
 
+static int configure_can_data_timing(void)
+{
+	struct can_timing timing = { 0 };
+	uint32_t tseg1;
+	int ret;
+
+	ret = can_calc_timing_data(can_dev, &timing, CAN_DATA_BITRATE,
+				  CAN_DATA_SAMPLE_POINT);
+	if (ret < 0) {
+		return ret;
+	}
+
+	timing.sjw = timing.phase_seg2;
+	ret = can_set_timing_data(can_dev, &timing);
+	if (ret != 0) {
+		return ret;
+	}
+
+	tseg1 = timing.prop_seg + timing.phase_seg1;
+	can_data_tq = 1U + tseg1 + timing.phase_seg2;
+	can_data_sample_point_permille = (1U + tseg1) * 1000U / can_data_tq;
+	return 0;
+}
+
+static void can_loopback_rx_callback(const struct device *dev,
+				     struct can_frame *frame, void *user_data)
+{
+	uint8_t payload_len = can_dlc_to_bytes(frame->dlc);
+
+	ARG_UNUSED(dev);
+	ARG_UNUSED(user_data);
+
+	can_loopback_frame_valid =
+		frame->id == CAN_LOOPBACK_ID &&
+		(frame->flags & (CAN_FRAME_FDF | CAN_FRAME_BRS)) ==
+			(CAN_FRAME_FDF | CAN_FRAME_BRS) &&
+		payload_len == CAN_LOOPBACK_PAYLOAD_LEN &&
+		sys_get_le32(&frame->data[0]) == CAN_LOOPBACK_MAGIC &&
+		frame->data[4] == 0x08U && frame->data[5] == 0x01U &&
+		frame->data[6] == 0x5aU && frame->data[7] == 0xa5U;
+	k_sem_give(&can_loopback_rx_sem);
+}
+
+static bool run_can_loopback_self_test(void)
+{
+	struct can_frame frame = { 0 };
+	int ret;
+
+	k_sem_reset(&can_loopback_rx_sem);
+	can_loopback_frame_valid = false;
+	can_loopback_mode_ret = can_set_mode(can_dev,
+					    CAN_MODE_FD | CAN_MODE_LOOPBACK);
+	if (can_loopback_mode_ret != 0) {
+		return false;
+	}
+
+	can_loopback_bitrate_ret = can_set_bitrate(can_dev,
+					     CAN_NOMINAL_BITRATE);
+	if (can_loopback_bitrate_ret != 0) {
+		return false;
+	}
+
+	can_loopback_data_bitrate_ret = configure_can_data_timing();
+	if (can_loopback_data_bitrate_ret != 0) {
+		return false;
+	}
+
+	can_loopback_start_ret = can_start(can_dev);
+	if (can_loopback_start_ret != 0) {
+		return false;
+	}
+
+	frame.id = CAN_LOOPBACK_ID;
+	frame.flags = CAN_FRAME_FDF | CAN_FRAME_BRS;
+	frame.dlc = can_bytes_to_dlc(CAN_LOOPBACK_PAYLOAD_LEN);
+	sys_put_le32(CAN_LOOPBACK_MAGIC, &frame.data[0]);
+	frame.data[4] = 0x08U;
+	frame.data[5] = 0x01U;
+	frame.data[6] = 0x5aU;
+	frame.data[7] = 0xa5U;
+	for (uint8_t i = 8U; i < CAN_LOOPBACK_PAYLOAD_LEN; i++) {
+		frame.data[i] = (uint8_t)(0xa5U ^ i);
+	}
+
+	can_loopback_tx_ret = can_send(can_dev, &frame,
+					 K_MSEC(CAN_LOOPBACK_TIMEOUT_MS), NULL, NULL);
+	if (can_loopback_tx_ret == 0) {
+		can_loopback_rx_wait_ret = k_sem_take(&can_loopback_rx_sem,
+						      K_MSEC(CAN_LOOPBACK_TIMEOUT_MS));
+	} else {
+		can_loopback_rx_wait_ret = can_loopback_tx_ret;
+	}
+
+	ret = can_stop(can_dev);
+	can_loopback_stop_ret = ret == -EALREADY ? 0 : ret;
+	return can_loopback_tx_ret == 0 && can_loopback_rx_wait_ret == 0 &&
+	       can_loopback_frame_valid && can_loopback_stop_ret == 0;
+}
+
 static bool init_can_controller(void)
 {
+	const struct can_filter loopback_filter = {
+		.flags = 0,
+		.id = CAN_LOOPBACK_ID,
+		.mask = 0x7ffU,
+	};
+	bool loopback_ok;
+
 	memset(&can_last_err, 0, sizeof(can_last_err));
 	can_mode_ret = -ENODEV;
 	can_bitrate_ret = -ENODEV;
 	can_data_bitrate_ret = -ENODEV;
 	can_start_ret = -ENODEV;
 	can_state_ret = -ENODEV;
+	can_core_clock_ret = -ENODEV;
+	can_loopback_filter_ret = -ENODEV;
+	can_loopback_mode_ret = -ENODEV;
+	can_loopback_bitrate_ret = -ENODEV;
+	can_loopback_data_bitrate_ret = -ENODEV;
+	can_loopback_start_ret = -ENODEV;
+	can_loopback_tx_ret = -ENODEV;
+	can_loopback_rx_wait_ret = -ENODEV;
+	can_loopback_stop_ret = -ENODEV;
+	can_core_clock_hz = 0U;
+	can_data_tq = 0U;
+	can_data_sample_point_permille = 0U;
+	can_loopback_frame_valid = false;
 
 	if (!device_is_ready(can_dev)) {
+		return false;
+	}
+
+	can_core_clock_ret = can_get_core_clock(can_dev, &can_core_clock_hz);
+	can_loopback_filter_ret = can_add_rx_filter(can_dev,
+					       can_loopback_rx_callback, NULL,
+					       &loopback_filter);
+	if (can_loopback_filter_ret < 0) {
+		return false;
+	}
+
+	loopback_ok = run_can_loopback_self_test();
+	if (!loopback_ok) {
+		update_can_state();
 		return false;
 	}
 
@@ -755,7 +908,7 @@ static bool init_can_controller(void)
 		return false;
 	}
 
-	can_data_bitrate_ret = can_set_bitrate_data(can_dev, CAN_DATA_BITRATE);
+	can_data_bitrate_ret = configure_can_data_timing();
 	if (can_data_bitrate_ret != 0) {
 		update_can_state();
 		return false;
@@ -1060,6 +1213,17 @@ static void print_status(uint32_t loop_count, uint32_t dtr, uint32_t baudrate,
 			   can_start_ret, can_state_name(can_last_state),
 			   can_state_ret, can_last_err.rx_err_cnt,
 			   can_last_err.tx_err_cnt);
+		cdc_printf("  CAN clock   : %s, %u Hz; data timing=%u TQ, sample=%u.%u%%\r\n",
+			   can_core_clock_ret == 0 ? "ready" : "failed",
+			   can_core_clock_hz, can_data_tq,
+			   can_data_sample_point_permille / 10U,
+			   can_data_sample_point_permille % 10U);
+		cdc_printf("  CAN loopback: filter=%d, mode=%d, nominal=%d, data=%d, start=%d, tx=%d, rx_wait=%d, stop=%d, frame=%s\r\n",
+			   can_loopback_filter_ret, can_loopback_mode_ret,
+			   can_loopback_bitrate_ret, can_loopback_data_bitrate_ret,
+			   can_loopback_start_ret, can_loopback_tx_ret,
+			   can_loopback_rx_wait_ret, can_loopback_stop_ret,
+			   can_loopback_frame_valid ? "OK" : "FAILED");
 	} else {
 		cdc_printf("  CAN         : FDCAN2 not-ready, start=%d\r\n",
 			   can_start_ret);
