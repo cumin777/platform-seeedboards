@@ -145,6 +145,8 @@ static int can_start_ret;
 static int can_state_ret;
 static enum can_state can_last_state = CAN_STATE_STOPPED;
 static struct can_bus_err_cnt can_last_err;
+static int can_core_clock_ret;
+static uint32_t can_core_clock_hz;
 static uint32_t heater_pwm_duty_permille;
 static int heater_pwm_ret;
 static int imu_init_ret;
@@ -738,10 +740,14 @@ static bool init_can_controller(void)
 	can_data_bitrate_ret = -ENODEV;
 	can_start_ret = -ENODEV;
 	can_state_ret = -ENODEV;
+	can_core_clock_ret = -ENODEV;
+	can_core_clock_hz = 0U;
 
 	if (!device_is_ready(can_dev)) {
 		return false;
 	}
+
+	can_core_clock_ret = can_get_core_clock(can_dev, &can_core_clock_hz);
 
 	can_mode_ret = can_set_mode(can_dev, CAN_MODE_FD);
 	if (can_mode_ret != 0) {
@@ -1060,6 +1066,8 @@ static void print_status(uint32_t loop_count, uint32_t dtr, uint32_t baudrate,
 			   can_start_ret, can_state_name(can_last_state),
 			   can_state_ret, can_last_err.rx_err_cnt,
 			   can_last_err.tx_err_cnt);
+		cdc_printf("  CAN clock   : get=%d, frequency=%u Hz\r\n",
+			   can_core_clock_ret, can_core_clock_hz);
 	} else {
 		cdc_printf("  CAN         : FDCAN2 not-ready, start=%d\r\n",
 			   can_start_ret);

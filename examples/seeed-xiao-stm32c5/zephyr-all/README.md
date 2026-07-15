@@ -10,6 +10,7 @@ Small bring-up sample with only:
 - IMU accel/gyro raw readout using the LSM6DS3TR-C INT1 data-ready GPIO interrupt
 - CAN transceiver enable by driving CAN_STB/PB14 low
 - I2C, SPI/XSPI, and CAN/CAN FD configs enabled with runtime ready/start status reporting
+- Step 2 first phase only reports the FDCAN kernel clock through `can_get_core_clock()`; it does not change CAN timing, enter loopback, or transmit a frame.
 - Battery voltage readout through BAT_EN/PE2 and BAT_Reading/PA4
 - External flash erase/write/read/verify every 5 seconds
 
