@@ -59,10 +59,9 @@ static const struct speed_gear gears[] = {
 	{0U, 0.0f, "stop"},
 	{1U, 3.0f, "low"},
 	{2U, 6.0f, "medium"},
-	{3U, 10.0f, "high"},
 };
 
-static const uint8_t gear_sequence[] = {0U, 1U, 2U, 3U, 2U, 1U};
+static const uint8_t gear_sequence[] = {0U, 1U, 2U, 1U};
 static uint8_t sequence_pos;
 
 static void tx_callback(const struct device *dev, int error, void *user_data)
@@ -273,7 +272,7 @@ int main(void)
 	int ret;
 
 	printf("XIAO STM32C5 Damiao DM-J4340P-2EC V1.1 24V speed sample\n");
-	printf("Automatic gear sequence every 5 seconds: 0->1->2->3->2->1->0\n");
+	printf("Automatic speed sequence every 5 seconds: 0->3->6->3->0 rad/s\n");
 	printf("Motor ID: %u, CAN bitrate: 1 Mbps\n", DAMIAO_MOTOR_ID);
 
 	if (!device_is_ready(can_dev)) {

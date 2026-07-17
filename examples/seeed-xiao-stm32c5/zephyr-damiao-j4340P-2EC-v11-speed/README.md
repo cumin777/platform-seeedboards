@@ -28,12 +28,11 @@ rated speed:
 | 0 | 0.0 rad/s | 0 rpm |
 | 1 | 3.0 rad/s | 28.6 rpm |
 | 2 | 6.0 rad/s | 57.3 rpm |
-| 3 | 10.0 rad/s | 95.5 rpm |
 
 The firmware advances one gear every 5 seconds:
 
 ```text
-0 -> 1 -> 2 -> 3 -> 2 -> 1 -> 0
+0 -> 3 -> 6 -> 3 -> 0 rad/s
 ```
 
 ## CAN Protocol

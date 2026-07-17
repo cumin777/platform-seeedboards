@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
  *
- * XIAO STM32C5 Damiao DM-J4340P-2EC V1.1 24V speed-mode sample.
+ * XIAO STM32C5 Damiao DM-J4340P-2EC V1.1 24V speed aging sample.
  */
 
 #include <stdint.h>
@@ -40,8 +40,8 @@
 #define DAMIAO_CTRL_MODE_SPEED 3U
 
 #define CONTROL_PERIOD_MS 20
-#define GEAR_PERIOD_MS 5000
-#define FEEDBACK_PRINT_PERIOD_MS 500
+#define FEEDBACK_PRINT_PERIOD_MS 1000
+#define POSITION_COUNTS_PER_REV 65536.0f
 
 static const struct device *const can_dev = DEVICE_DT_GET(CANBUS_NODE);
 static struct gpio_dt_spec led = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led0), gpios, {0});
@@ -49,89 +49,28 @@ static float feedback_vmax_rad_s = 30.0f;
 
 CAN_MSGQ_DEFINE(rx_msgq, 16);
 
-struct speed_gear {
-	uint8_t gear;
+struct aging_step {
+	const char *name;
 	float speed_rad_s;
-	const char *label;
+	uint32_t duration_ms;
 };
 
-static const struct speed_gear gears[] = {
-	{0U, 0.0f, "stop"},
-	{1U, 3.0f, "low"},
-	{2U, 6.0f, "medium"},
+static const struct aging_step aging_profile[] = {
+	{"run", 3.0f, 5U * 60U * 1000U},
+	{"cooldown", 0.0f, 10U * 60U * 1000U},
 };
 
-static const uint8_t gear_sequence[] = {0U, 1U, 2U, 1U};
-static uint8_t sequence_pos;
+static size_t profile_index;
+static int64_t profile_step_start_ms;
 
-static const char *can_state_name(enum can_state state)
-{
-	switch (state) {
-	case CAN_STATE_ERROR_ACTIVE:
-		return "error-active";
-	case CAN_STATE_ERROR_WARNING:
-		return "error-warning";
-	case CAN_STATE_ERROR_PASSIVE:
-		return "error-passive";
-	case CAN_STATE_BUS_OFF:
-		return "bus-off";
-	case CAN_STATE_STOPPED:
-		return "stopped";
-	default:
-		return "unknown";
-	}
-}
-
-static void print_can_state(const char *prefix)
-{
-	enum can_state state;
-	struct can_bus_err_cnt err_cnt;
-	int ret;
-
-	ret = can_get_state(can_dev, &state, &err_cnt);
-	if (ret != 0) {
-		printf("%s CAN get_state failed: %d\n", prefix, ret);
-		return;
-	}
-
-	printf("%s CAN state=%s tx_err=%u rx_err=%u\n", prefix, can_state_name(state),
-	       err_cnt.tx_err_cnt, err_cnt.rx_err_cnt);
-}
-
-static void state_change_callback(const struct device *dev, enum can_state state,
-				  struct can_bus_err_cnt err_cnt, void *user_data)
+static void tx_callback(const struct device *dev, int error, void *user_data)
 {
 	ARG_UNUSED(dev);
 	ARG_UNUSED(user_data);
 
-	printf("CAN state change: state=%s tx_err=%u rx_err=%u\n", can_state_name(state),
-	       err_cnt.tx_err_cnt, err_cnt.rx_err_cnt);
-}
-
-static void tx_callback(const struct device *dev, int error, void *user_data)
-{
-	const char *label = user_data != NULL ? user_data : "unknown";
-
-	ARG_UNUSED(dev);
-
 	if (error != 0) {
-		printf("CAN TX callback %s error: %d\n", label, error);
-		print_can_state("tx callback");
+		printf("CAN TX error: %d\n", error);
 	}
-}
-
-static int damiao_can_send(const struct can_frame *frame, const char *label)
-{
-	int ret;
-
-	ret = can_send(can_dev, frame, K_NO_WAIT, tx_callback, (void *)label);
-	if (ret != 0) {
-		printf("CAN send %s immediate ret: %d id=0x%03x dlc=%u\n", label, ret,
-		       frame->id, frame->dlc);
-		print_can_state("send ret");
-	}
-
-	return ret;
 }
 
 static int damiao_send_cmd(uint8_t cmd)
@@ -142,7 +81,7 @@ static int damiao_send_cmd(uint8_t cmd)
 		.data = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, cmd},
 	};
 
-	return damiao_can_send(&frame, "cmd");
+	return can_send(can_dev, &frame, K_NO_WAIT, tx_callback, NULL);
 }
 
 static int damiao_read_param(uint8_t reg)
@@ -158,7 +97,7 @@ static int damiao_read_param(uint8_t reg)
 		},
 	};
 
-	return damiao_can_send(&frame, "read-param");
+	return can_send(can_dev, &frame, K_NO_WAIT, tx_callback, NULL);
 }
 
 static int damiao_write_u32_param(uint8_t reg, uint32_t value)
@@ -178,7 +117,7 @@ static int damiao_write_u32_param(uint8_t reg, uint32_t value)
 		},
 	};
 
-	return damiao_can_send(&frame, "write-param");
+	return can_send(can_dev, &frame, K_NO_WAIT, tx_callback, NULL);
 }
 
 static int damiao_send_speed(float speed_rad_s)
@@ -189,20 +128,29 @@ static int damiao_send_speed(float speed_rad_s)
 	};
 
 	memcpy(&frame.data[0], &speed_rad_s, sizeof(speed_rad_s));
-	return damiao_can_send(&frame, "speed");
+	return can_send(can_dev, &frame, K_NO_WAIT, tx_callback, NULL);
 }
 
-static void print_current_gear(void)
+static void print_current_step(void)
 {
-	const struct speed_gear *gear = &gears[gear_sequence[sequence_pos]];
+	const struct aging_step *step = &aging_profile[profile_index];
 
-	printf("Gear %u (%s): %.2f rad/s\n", gear->gear, gear->label, (double)gear->speed_rad_s);
+	printf("STEP %u/%u (%s): %.2f rad/s for %u min\n",
+	       (uint32_t)profile_index + 1U, (uint32_t)ARRAY_SIZE(aging_profile), step->name,
+	       (double)step->speed_rad_s, step->duration_ms / (60U * 1000U));
 }
 
-static void advance_gear(void)
+static void update_aging_step(int64_t now)
 {
-	sequence_pos = (sequence_pos + 1U) % ARRAY_SIZE(gear_sequence);
-	print_current_gear();
+	const struct aging_step *step = &aging_profile[profile_index];
+
+	if (now - profile_step_start_ms < step->duration_ms) {
+		return;
+	}
+
+	profile_index = (profile_index + 1U) % ARRAY_SIZE(aging_profile);
+	profile_step_start_ms = now;
+	print_current_step();
 }
 
 static bool handle_param_response(const struct can_frame *frame)
@@ -272,7 +220,9 @@ static bool handle_param_response(const struct can_frame *frame)
 static void handle_feedback(void)
 {
 	static int64_t last_print_time;
-	static int64_t last_state_time;
+	static int64_t position_accum_counts;
+	static uint16_t last_pos_raw;
+	static bool position_valid;
 	struct can_frame frame;
 	int64_t now = k_uptime_get();
 
@@ -290,30 +240,39 @@ static void handle_feedback(void)
 			continue;
 		}
 
-		if (now - last_print_time < FEEDBACK_PRINT_PERIOD_MS) {
-			continue;
-		}
-
 		uint8_t motor_id = frame.data[0] & 0x0fU;
 		uint8_t err = frame.data[0] >> 4;
 		uint16_t pos_raw = ((uint16_t)frame.data[1] << 8) | frame.data[2];
 		uint16_t vel_raw = ((uint16_t)frame.data[3] << 4) | (frame.data[4] >> 4);
 		uint16_t torque_raw = ((uint16_t)(frame.data[4] & 0x0fU) << 8) | frame.data[5];
 		float vel_rad_s = (((float)vel_raw / 4095.0f) * 2.0f - 1.0f) * feedback_vmax_rad_s;
+		float total_rev;
 
-		printf("FB can_id=0x%03x motor=%u err=0x%x pos=0x%04x vel=0x%03x %.2f rad/s tq=0x%03x mos=%u rotor=%u\n",
-		       frame.id, motor_id, err, pos_raw, vel_raw, (double)vel_rad_s, torque_raw,
-		       frame.data[6], frame.data[7]);
+		if (position_valid) {
+			int32_t delta = (int32_t)pos_raw - (int32_t)last_pos_raw;
+
+			if (delta > 32767) {
+				delta -= 65536;
+			} else if (delta < -32768) {
+				delta += 65536;
+			}
+
+			position_accum_counts += delta;
+		} else {
+			position_valid = true;
+		}
+
+		last_pos_raw = pos_raw;
+		total_rev = (float)position_accum_counts / POSITION_COUNTS_PER_REV;
+
+		if (now - last_print_time < FEEDBACK_PRINT_PERIOD_MS) {
+			continue;
+		}
+
+		printf("FB can_id=0x%03x motor=%u err=0x%x pos=0x%04x rev=%.2f vel=0x%03x %.2f rad/s tq=0x%03x mos=%u rotor=%u\n",
+		       frame.id, motor_id, err, pos_raw, (double)total_rev, vel_raw,
+		       (double)vel_rad_s, torque_raw, frame.data[6], frame.data[7]);
 		last_print_time = now;
-	}
-
-	if (last_state_time == 0) {
-		last_state_time = now;
-	}
-
-	if (now - last_state_time >= 1000) {
-		print_can_state("periodic");
-		last_state_time = now;
 	}
 }
 
@@ -341,17 +300,15 @@ int main(void)
 	};
 	int ret;
 
-	printf("XIAO STM32C5 Damiao DM-J4340P-2EC V1.1 24V speed sample\n");
-	printf("Automatic speed sequence every 5 seconds: 0->3->6->3->0 rad/s\n");
-	printf("Motor ID: %u, CAN bitrate: 1 Mbps\n", DAMIAO_MOTOR_ID);
+	printf("XIAO STM32C5 Damiao DM-J4340P-2EC V1.1 24V speed aging sample\n");
+	printf("Aging profile: 3 rad/s 5 min -> 0 rad/s 10 min\n");
+	printf("Motor ID: %u, CAN bitrate: 1 Mbps, command period: %u ms\n",
+	       DAMIAO_MOTOR_ID, CONTROL_PERIOD_MS);
 
 	if (!device_is_ready(can_dev)) {
 		printf("CAN device %s is not ready\n", can_dev->name);
 		return 0;
 	}
-
-	can_set_state_change_callback(can_dev, state_change_callback, NULL);
-	print_can_state("initial");
 
 	if (led.port != NULL && gpio_is_ready_dt(&led)) {
 		(void)gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
@@ -374,7 +331,6 @@ int main(void)
 		printf("Failed to start CAN controller: %d\n", ret);
 		return 0;
 	}
-	print_can_state("after can_start");
 
 	(void)damiao_send_cmd(DAMIAO_CMD_CLEAR_ERROR);
 	drain_rx_for(100);
@@ -391,23 +347,20 @@ int main(void)
 	read_param_with_drain(DAMIAO_REG_VBUS);
 	(void)damiao_send_cmd(DAMIAO_CMD_ENABLE);
 	drain_rx_for(100);
-	print_current_gear();
-
-	int64_t next_gear_time = k_uptime_get() + GEAR_PERIOD_MS;
+	profile_step_start_ms = k_uptime_get();
+	print_current_step();
 
 	while (true) {
-		const struct speed_gear *gear = &gears[gear_sequence[sequence_pos]];
+		int64_t now = k_uptime_get();
+		const struct aging_step *step;
 
-		if (k_uptime_get() >= next_gear_time) {
-			advance_gear();
-			next_gear_time += GEAR_PERIOD_MS;
-		}
-
-		(void)damiao_send_speed(gear->speed_rad_s);
+		update_aging_step(now);
+		step = &aging_profile[profile_index];
+		(void)damiao_send_speed(step->speed_rad_s);
 		handle_feedback();
 
 		if (led.port != NULL) {
-			(void)gpio_pin_set_dt(&led, gear->gear != 0U);
+			(void)gpio_pin_set_dt(&led, step->speed_rad_s != 0.0f);
 		}
 
 		k_sleep(K_MSEC(CONTROL_PERIOD_MS));

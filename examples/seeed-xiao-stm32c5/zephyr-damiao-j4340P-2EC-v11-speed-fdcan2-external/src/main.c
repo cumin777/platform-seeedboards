@@ -13,8 +13,10 @@
 #include <zephyr/drivers/can.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/sys_io.h>
 
 #define CANBUS_NODE DT_CHOSEN(zephyr_canbus)
+#define BOARD_CAN_STB_NODE DT_ALIAS(can_stb_standby)
 
 #ifndef DAMIAO_MOTOR_ID
 #define DAMIAO_MOTOR_ID 1U
@@ -43,8 +45,14 @@
 #define GEAR_PERIOD_MS 5000
 #define FEEDBACK_PRINT_PERIOD_MS 500
 
+/* Bosch M_CAN Protocol Status Register (PSR) last-error-code field. */
+#define MCAN_PSR_OFFSET 0x44U
+#define MCAN_PSR_LEC_MASK 0x7U
+
 static const struct device *const can_dev = DEVICE_DT_GET(CANBUS_NODE);
 static struct gpio_dt_spec led = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led0), gpios, {0});
+static struct gpio_dt_spec board_can_stb =
+	GPIO_DT_SPEC_GET_OR(BOARD_CAN_STB_NODE, gpios, {0});
 static float feedback_vmax_rad_s = 30.0f;
 
 CAN_MSGQ_DEFINE(rx_msgq, 16);
@@ -82,6 +90,38 @@ static const char *can_state_name(enum can_state state)
 	}
 }
 
+static const char *mcan_lec_name(uint32_t lec)
+{
+	switch (lec) {
+	case 0U:
+		return "none";
+	case 1U:
+		return "stuff-error";
+	case 2U:
+		return "form-error";
+	case 3U:
+		return "ack-error";
+	case 4U:
+		return "bit1-error";
+	case 5U:
+		return "bit0-error";
+	case 6U:
+		return "crc-error";
+	case 7U:
+		return "no-change";
+	default:
+		return "invalid";
+	}
+}
+
+static void print_mcan_last_error(void)
+{
+	uint32_t psr = sys_read32(DT_REG_ADDR(CANBUS_NODE) + MCAN_PSR_OFFSET);
+	uint32_t lec = psr & MCAN_PSR_LEC_MASK;
+
+	printf("M_CAN PSR=0x%08x LEC=%u (%s)\n", psr, lec, mcan_lec_name(lec));
+}
+
 static void print_can_state(const char *prefix)
 {
 	enum can_state state;
@@ -106,6 +146,7 @@ static void state_change_callback(const struct device *dev, enum can_state state
 
 	printf("CAN state change: state=%s tx_err=%u rx_err=%u\n", can_state_name(state),
 	       err_cnt.tx_err_cnt, err_cnt.rx_err_cnt);
+	print_mcan_last_error();
 }
 
 static void tx_callback(const struct device *dev, int error, void *user_data)
@@ -132,6 +173,29 @@ static int damiao_can_send(const struct can_frame *frame, const char *label)
 	}
 
 	return ret;
+}
+
+static int force_board_can_stb_standby(void)
+{
+	int ret;
+
+	if (board_can_stb.port == NULL) {
+		return 0;
+	}
+
+	if (!gpio_is_ready_dt(&board_can_stb)) {
+		printf("Board CAN STB GPIO is not ready\n");
+		return -ENODEV;
+	}
+
+	ret = gpio_pin_configure_dt(&board_can_stb, GPIO_OUTPUT_ACTIVE);
+	if (ret != 0) {
+		printf("Failed to force board CAN STB high: %d\n", ret);
+		return ret;
+	}
+
+	printf("Board CAN transceiver STB forced HIGH (standby)\n");
+	return 0;
 }
 
 static int damiao_send_cmd(uint8_t cmd)
@@ -272,16 +336,20 @@ static bool handle_param_response(const struct can_frame *frame)
 static void handle_feedback(void)
 {
 	static int64_t last_print_time;
+	static int64_t last_rate_time;
 	static int64_t last_state_time;
+	static uint32_t rx_count_since_rate;
 	struct can_frame frame;
 	int64_t now = k_uptime_get();
 
 	while (k_msgq_get(&rx_msgq, &frame, K_NO_WAIT) == 0) {
+		rx_count_since_rate++;
+
 		if ((frame.flags & CAN_FRAME_IDE) != 0U || frame.dlc < 8U) {
 			if ((frame.flags & CAN_FRAME_IDE) == 0U && frame.dlc >= 4U) {
 				printf("RX can_id=0x%03x dlc=%u data=%02x %02x %02x %02x\n",
-			       frame.id, frame.dlc, frame.data[0], frame.data[1],
-			       frame.data[2], frame.data[3]);
+				       frame.id, frame.dlc, frame.data[0], frame.data[1],
+				       frame.data[2], frame.data[3]);
 			}
 			continue;
 		}
@@ -305,6 +373,16 @@ static void handle_feedback(void)
 		       frame.id, motor_id, err, pos_raw, vel_raw, (double)vel_rad_s, torque_raw,
 		       frame.data[6], frame.data[7]);
 		last_print_time = now;
+	}
+
+	if (last_rate_time == 0) {
+		last_rate_time = now;
+	}
+
+	if (now - last_rate_time >= 1000) {
+		printf("RX rate: %u frame/s\n", rx_count_since_rate);
+		rx_count_since_rate = 0U;
+		last_rate_time = now;
 	}
 
 	if (last_state_time == 0) {
@@ -375,6 +453,11 @@ int main(void)
 		return 0;
 	}
 	print_can_state("after can_start");
+
+	ret = force_board_can_stb_standby();
+	if (ret != 0) {
+		return 0;
+	}
 
 	(void)damiao_send_cmd(DAMIAO_CMD_CLEAR_ERROR);
 	drain_rx_for(100);

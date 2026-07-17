@@ -1,14 +1,20 @@
-# XIAO STM32C5 Damiao DM-J4340P-2EC V1.1 24V Speed Sample FDCAN1
+# XIAO STM32C5 Damiao DM-J4340P-2EC V1.1 24V Speed Sample FDCAN2 External
 
 This sample controls a Damiao DM-J4340P-2EC V1.1 24V integrated motor/driver
 through Classic CAN at 1 Mbps. It uses Damiao speed mode and automatically
 cycles through speed gears for CAN waveform observation.
 
+This variant simulates using XIAO STM32C5 as a module on a user PCB: the
+firmware uses the XIAO FDCAN2 controller logic pins with the user's external
+CAN transceiver, while forcing the XIAO board CAN transceiver standby pin
+`CAN_STB/PB14` high.
+
 ## Wiring
 
 ```text
-XIAO D12 / PB9 / FDCAN1_TX  -> external CAN transceiver TXD
-XIAO D11 / PB8 / FDCAN1_RX  <- external CAN transceiver RXD
+XIAO D14 / PB13 / FDCAN2_TX -> external CAN transceiver TXD
+XIAO D13 / PB5 / FDCAN2_RX  <- external CAN transceiver RXD
+XIAO D15 / PB14 / CAN_STB   -> driven HIGH by firmware to disable the XIAO board transceiver
 XIAO GND                    -> external CAN transceiver GND -> motor GND / 24V-
 External transceiver CAN_H  -> motor CAN_H
 External transceiver CAN_L  -> motor CAN_L
@@ -17,9 +23,11 @@ External transceiver VCC    -> 5V supply, if required by the transceiver board
 24V-                        -> motor GND
 ```
 
-This sample selects FDCAN1 through `zephyr/app.overlay` and uses the XIAO
-connector logic pins with an external CAN transceiver. Do not connect MCU
-CAN_TX/CAN_RX logic pins directly to the motor CANH/CANL differential bus.
+This sample selects FDCAN2 through `zephyr/app.overlay`. Zephyr still initializes
+the board CAN PHY binding, then the application drives PB14 high after
+`can_start()` so the XIAO board transceiver stays in standby while the FDCAN2
+logic pins are used by the external transceiver. Do not connect MCU CAN_TX/CAN_RX
+logic pins directly to the motor CANH/CANL differential bus.
 
 ## Speed Gears
 
@@ -52,6 +60,9 @@ DLC: 4
 
 The default `DAMIAO_MOTOR_ID` is `1`.
 
+This sample uses normal Classic CAN frames at 1 Mbps. It does not enable CAN FD
+data phase or send CAN FD frames.
+
 At startup the firmware writes only the runtime control mode over CAN:
 
 ```text
@@ -65,7 +76,7 @@ parameters and does not send Damiao's "store parameters" command.
 ## Build
 
 ```powershell
-cd D:\workspace\platform-seeedboards\examples\seeed-xiao-stm32c5\zephyr-damiao-j4340P-2EC-v11-speed-fdcan1
+cd D:\workspace\platform-seeedboards\examples\seeed-xiao-stm32c5\zephyr-damiao-j4340P-2EC-v11-speed-fdcan2-external
 pio run
 ```
 
@@ -79,6 +90,10 @@ The build output includes:
 
 The MCU sends target speed commands only. Damiao's internal driver handles the
 motor commutation, current loop, velocity loop, encoder feedback, and protection.
+
+The firmware prints `RX rate: N frame/s` once per second. The highest practical
+read rate depends on the external CAN transceiver, bus wiring, termination,
+motor response rate, and selected CAN bitrate.
 
 Reference manual used during setup:
 

@@ -35,12 +35,9 @@ the aging speeds below rated speed:
 | Step | Duration | Speed |
 | --- | ---: | ---: |
 | rest | 5 min | 0.0 rad/s |
-| low | 10 min | 3.0 rad/s |
-| medium | 10 min | 6.0 rad/s |
-| rated_guard | 10 min | 9.0 rad/s |
-| high | 10 min | 10.0 rad/s |
-| medium_down | 5 min | 6.0 rad/s |
-| low_down | 5 min | 3.0 rad/s |
+| low | 20 min | 3.0 rad/s |
+| medium | 20 min | 6.0 rad/s |
+| low_down | 10 min | 3.0 rad/s |
 | rest_end | 5 min | 0.0 rad/s |
 
 The profile is a 1-hour loop. For a 7-day aging test, leave the firmware

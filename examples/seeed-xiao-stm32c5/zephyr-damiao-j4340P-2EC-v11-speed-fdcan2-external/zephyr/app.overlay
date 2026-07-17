@@ -1,0 +1,36 @@
+/*
+ * This sample uses the XIAO connector FDCAN2 logic pins with a user-provided
+ * external CAN transceiver. The XIAO board transceiver is forced into standby
+ * by driving CAN_STB / PB14 high from the application.
+ *
+ * D13 / PB5  -> FDCAN2_RX
+ * D14 / PB13 -> FDCAN2_TX
+ * D15 / PB14 -> board CAN_STB, active-high standby
+ */
+/ {
+	chosen {
+		zephyr,canbus = &fdcan2;
+	};
+
+	external_can_control {
+		compatible = "gpio-leds";
+
+		board_can_stb_standby: board_can_stb_standby {
+			gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>;
+			label = "Board CAN transceiver STB";
+		};
+	};
+
+	aliases {
+		can0 = &fdcan2;
+		can-stb-standby = &board_can_stb_standby;
+	};
+};
+
+&fdcan2 {
+	/* This variant uses a separate transceiver, not the board CAN PHY. */
+	/delete-property/ phys;
+	pinctrl-0 = <&fdcan2_rx_pb5 &fdcan2_tx_pb13>;
+	pinctrl-names = "default";
+	status = "okay";
+};

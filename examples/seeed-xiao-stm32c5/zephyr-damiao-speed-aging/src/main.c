@@ -70,12 +70,9 @@ enum aging_mode {
 
 static const struct aging_step aging_profile[] = {
 	{"rest", 0.0f, 5U * 60U * 1000U},
-	{"low", 3.0f, 10U * 60U * 1000U},
-	{"medium", 6.0f, 10U * 60U * 1000U},
-	{"rated_guard", 9.0f, 10U * 60U * 1000U},
-	{"high", 10.0f, 10U * 60U * 1000U},
-	{"medium_down", 6.0f, 5U * 60U * 1000U},
-	{"low_down", 3.0f, 5U * 60U * 1000U},
+	{"low", 3.0f, 20U * 60U * 1000U},
+	{"medium", 6.0f, 20U * 60U * 1000U},
+	{"low_down", 3.0f, 10U * 60U * 1000U},
 	{"rest_end", 0.0f, 5U * 60U * 1000U},
 };
 
