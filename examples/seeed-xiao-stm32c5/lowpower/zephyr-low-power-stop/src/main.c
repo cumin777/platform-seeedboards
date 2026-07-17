@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: Apache-2.0
  *
- * XIAO STM32C5 low-power Standby test.
+ * XIAO STM32C5 low-power STOP test.
  */
 
 #include <zephyr/drivers/gpio.h>
@@ -12,8 +12,10 @@
 #include <cmsis_core.h>
 #include <stm32_ll_bus.h>
 #include <stm32_ll_cortex.h>
+#include <stm32_ll_exti.h>
 #include <stm32_ll_gpio.h>
 #include <stm32_ll_pwr.h>
+#include <stm32_ll_rcc.h>
 #include <stm32_ll_usart.h>
 
 #define LED0_NODE DT_ALIAS(led0)
@@ -35,6 +37,16 @@
 #define EXT_FLASH_IO3_PORT GPIOA
 #define EXT_FLASH_IO3_PIN LL_GPIO_PIN_6
 
+#ifndef LOW_POWER_STOP_MODE
+#define LOW_POWER_STOP_MODE LL_PWR_STOP1_MODE
+#endif
+
+#if LOW_POWER_STOP_MODE == LL_PWR_STOP0_MODE
+#define LOW_POWER_STOP_NAME "STOP0"
+#else
+#define LOW_POWER_STOP_NAME "STOP1"
+#endif
+
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 
 #if DT_NODE_HAS_PROP(CAN_PHY_NODE, standby_gpios)
@@ -48,11 +60,6 @@ static void prepare_for_low_power(const char *mode)
 	printk("Device will run normally for %d seconds, then enter %s.\n",
 	       PREPARE_SECONDS, mode);
 
-	if (LL_PWR_IsActiveFlag_SB() != 0U) {
-		printk("Previous reset source: Standby wake/reset flag was set.\n");
-		LL_PWR_ClearFlag_SB();
-	}
-
 	if (gpio_is_ready_dt(&led) && gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE) == 0) {
 		for (int remaining = PREPARE_SECONDS; remaining > 0; remaining--) {
 			gpio_pin_toggle_dt(&led);
@@ -60,7 +67,7 @@ static void prepare_for_low_power(const char *mode)
 			k_msleep(1000);
 		}
 
-		gpio_pin_set_dt(&led, 1);
+		gpio_pin_set_dt(&led, 0);
 	} else {
 		for (int remaining = PREPARE_SECONDS; remaining > 0; remaining--) {
 			printk("Entering %s in %d second(s)\n", mode, remaining);
@@ -71,6 +78,11 @@ static void prepare_for_low_power(const char *mode)
 
 static void clear_pending_irqs(void)
 {
+	LL_EXTI_ClearRisingFlag_0_31(LL_EXTI_LINE_ALL_0_31);
+	LL_EXTI_ClearFallingFlag_0_31(LL_EXTI_LINE_ALL_0_31);
+	LL_EXTI_ClearRisingFlag_32_63(LL_EXTI_LINE_ALL_32_63);
+	LL_EXTI_ClearFallingFlag_32_63(LL_EXTI_LINE_ALL_32_63);
+
 	for (size_t i = 0; i < ARRAY_SIZE(NVIC->ICPR); i++) {
 		NVIC->ICPR[i] = UINT32_MAX;
 	}
@@ -78,11 +90,10 @@ static void clear_pending_irqs(void)
 	SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk | SCB_ICSR_PENDSVCLR_Msk;
 }
 
-static void release_debug_and_io_pins(void)
+static void release_console_and_usb_pins(void)
 {
 	LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_GPIOA);
 
-	/* Console UART and USB pins are not needed after the final printk. */
 	LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_9 | LL_GPIO_PIN_10 |
 				  LL_GPIO_PIN_11 | LL_GPIO_PIN_12,
 			   LL_GPIO_MODE_ANALOG);
@@ -103,7 +114,7 @@ static void disable_console_uart(void)
 #endif
 }
 
-static void disable_usb_peripheral_clock(void)
+static void disable_usb_peripheral(void)
 {
 #if IS_ENABLED(CONFIG_UDC_DRIVER) && DT_NODE_EXISTS(DT_NODELABEL(zephyr_udc0))
 	const struct device *const udc = DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0));
@@ -121,6 +132,28 @@ static void disable_usb_peripheral_clock(void)
 #ifdef LL_APB2_GRP1_PERIPH_USB
 	LL_APB2_GRP1_DisableClock(LL_APB2_GRP1_PERIPH_USB);
 	LL_APB2_GRP1_DisableClockLowPower(LL_APB2_GRP1_PERIPH_USB);
+#endif
+}
+
+static void disable_external_high_speed_clock(void)
+{
+#if defined(RCC_CR1_PSISON)
+	LL_RCC_PSIS_Disable();
+#endif
+#if defined(RCC_CR1_PSIKON)
+	LL_RCC_PSIK_Disable();
+#endif
+#if defined(RCC_CR1_HSEON)
+	LL_RCC_HSE_Disable();
+#endif
+}
+
+static void disable_debug_low_power_emulation(void)
+{
+#ifdef DBGMCU
+	DBGMCU->CR &= ~(DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STOP |
+		       DBGMCU_CR_DBG_STANDBY | DBGMCU_CR_TRACE_IOEN |
+		       DBGMCU_CR_TRACE_EN);
 #endif
 }
 
@@ -198,7 +231,7 @@ static void prepare_external_flash_for_low_power(void)
 	set_gpio_analog(EXT_FLASH_IO1_PORT, EXT_FLASH_IO1_PIN);
 }
 
-static void prepare_board_for_standby(void)
+static void prepare_board_for_stop(void)
 {
 #if DT_NODE_HAS_PROP(CAN_PHY_NODE, standby_gpios)
 	if (gpio_is_ready_dt(&can_stb)) {
@@ -211,28 +244,28 @@ static void prepare_board_for_standby(void)
 	}
 
 	prepare_external_flash_for_low_power();
-	release_debug_and_io_pins();
+	release_console_and_usb_pins();
 	disable_console_uart();
-	disable_usb_peripheral_clock();
-
-	LL_PWR_EnableFlashLowPWRMode();
+	disable_usb_peripheral();
+	disable_external_high_speed_clock();
+	disable_debug_low_power_emulation();
 	clear_pending_irqs();
 }
 
 int main(void)
 {
-	prepare_for_low_power("Standby");
+	prepare_for_low_power(LOW_POWER_STOP_NAME);
 
-	printk("Entering Standby now. Reset or a later wake source is required to exit.\n");
+	printk("Entering %s now. Reset the board to exit this test.\n", LOW_POWER_STOP_NAME);
 	k_msleep(20);
 
-	prepare_board_for_standby();
+	prepare_board_for_stop();
 	SysTick->CTRL &= ~SysTick_CTRL_ENABLE_Msk;
 	__disable_irq();
 
-	LL_PWR_ClearFlag_WU(LL_PWR_WAKEUP_PIN_ALL);
-	LL_PWR_ClearFlag_SB();
-	LL_PWR_SetPowerMode(LL_PWR_STANDBY_MODE);
+	LL_PWR_ClearFlag_STOP();
+	LL_PWR_EnableFlashLowPWRMode();
+	LL_PWR_SetPowerMode(LOW_POWER_STOP_MODE);
 	SCB_EnableDeepSleep();
 
 	while (true) {

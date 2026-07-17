@@ -20,6 +20,21 @@
 #define LED0_NODE DT_ALIAS(led0)
 #define CAN_PHY_NODE DT_NODELABEL(can_phy0)
 #define PREPARE_SECONDS 5
+#define EXT_FLASH_CMD_DEEP_POWER_DOWN 0xb9U
+#define EXT_FLASH_TDP_US 10U
+
+#define EXT_FLASH_CS_PORT GPIOB
+#define EXT_FLASH_CS_PIN LL_GPIO_PIN_10
+#define EXT_FLASH_CLK_PORT GPIOB
+#define EXT_FLASH_CLK_PIN LL_GPIO_PIN_2
+#define EXT_FLASH_IO0_PORT GPIOB
+#define EXT_FLASH_IO0_PIN LL_GPIO_PIN_1
+#define EXT_FLASH_IO1_PORT GPIOA
+#define EXT_FLASH_IO1_PIN LL_GPIO_PIN_5
+#define EXT_FLASH_IO2_PORT GPIOA
+#define EXT_FLASH_IO2_PIN LL_GPIO_PIN_7
+#define EXT_FLASH_IO3_PORT GPIOA
+#define EXT_FLASH_IO3_PIN LL_GPIO_PIN_6
 
 #ifndef LOW_POWER_STOP_MODE
 #define LOW_POWER_STOP_MODE LL_PWR_STOP1_MODE
@@ -128,26 +143,78 @@ static void disable_debug_low_power_emulation(void)
 #endif
 }
 
-static void prepare_external_flash_for_low_power(void)
+static void set_gpio_output(GPIO_TypeDef *gpio, uint32_t pin, bool high)
+{
+	if (high) {
+		LL_GPIO_SetOutputPin(gpio, pin);
+	} else {
+		LL_GPIO_ResetOutputPin(gpio, pin);
+	}
+
+	LL_GPIO_SetPinMode(gpio, pin, LL_GPIO_MODE_OUTPUT);
+	LL_GPIO_SetPinOutputType(gpio, pin, LL_GPIO_OUTPUT_PUSHPULL);
+	LL_GPIO_SetPinSpeed(gpio, pin, LL_GPIO_SPEED_FREQ_LOW);
+	LL_GPIO_SetPinPull(gpio, pin, LL_GPIO_PULL_NO);
+}
+
+static void set_gpio_analog(GPIO_TypeDef *gpio, uint32_t pin)
+{
+	LL_GPIO_SetPinMode(gpio, pin, LL_GPIO_MODE_ANALOG);
+	LL_GPIO_SetPinPull(gpio, pin, LL_GPIO_PULL_NO);
+}
+
+static void bitbang_spi_write_byte(uint8_t byte)
+{
+	for (int bit = 7; bit >= 0; bit--) {
+		if ((byte & BIT(bit)) != 0U) {
+			LL_GPIO_SetOutputPin(EXT_FLASH_IO0_PORT, EXT_FLASH_IO0_PIN);
+		} else {
+			LL_GPIO_ResetOutputPin(EXT_FLASH_IO0_PORT, EXT_FLASH_IO0_PIN);
+		}
+
+		k_busy_wait(1);
+		LL_GPIO_SetOutputPin(EXT_FLASH_CLK_PORT, EXT_FLASH_CLK_PIN);
+		k_busy_wait(1);
+		LL_GPIO_ResetOutputPin(EXT_FLASH_CLK_PORT, EXT_FLASH_CLK_PIN);
+	}
+}
+
+static void enter_external_flash_deep_power_down(void)
 {
 	LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_GPIOA);
 	LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_GPIOB);
 
-	/* Keep the NOR flash deselected, with WP#/HOLD# at valid CMOS levels.
-	 * Leave SCLK/IO0/IO1 analog to avoid fighting the flash or board pulls.
+	/* PY25Q128HA DP command: CS# low, send B9h in SPI mode 0, CS# high. */
+	set_gpio_output(EXT_FLASH_CS_PORT, EXT_FLASH_CS_PIN, true);
+	set_gpio_output(EXT_FLASH_CLK_PORT, EXT_FLASH_CLK_PIN, false);
+	set_gpio_output(EXT_FLASH_IO0_PORT, EXT_FLASH_IO0_PIN, false);
+	set_gpio_output(EXT_FLASH_IO2_PORT, EXT_FLASH_IO2_PIN, true);
+	set_gpio_output(EXT_FLASH_IO3_PORT, EXT_FLASH_IO3_PIN, true);
+	set_gpio_analog(EXT_FLASH_IO1_PORT, EXT_FLASH_IO1_PIN);
+	k_busy_wait(1);
+
+	LL_GPIO_ResetOutputPin(EXT_FLASH_CS_PORT, EXT_FLASH_CS_PIN);
+	k_busy_wait(1);
+	bitbang_spi_write_byte(EXT_FLASH_CMD_DEEP_POWER_DOWN);
+	k_busy_wait(1);
+	LL_GPIO_SetOutputPin(EXT_FLASH_CS_PORT, EXT_FLASH_CS_PIN);
+	k_busy_wait(EXT_FLASH_TDP_US);
+}
+
+static void prepare_external_flash_for_low_power(void)
+{
+	enter_external_flash_deep_power_down();
+
+	/* Keep the NOR flash deselected and in deep power-down. WP#/HOLD# stay
+	 * at valid CMOS levels; SCLK/IO0/IO1 go analog to minimize leakage.
 	 */
-	LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_10, LL_GPIO_MODE_OUTPUT);
-	LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_7 | LL_GPIO_PIN_6, LL_GPIO_MODE_OUTPUT);
-	LL_GPIO_SetPinPull(GPIOB, LL_GPIO_PIN_10, LL_GPIO_PULL_NO);
-	LL_GPIO_SetPinPull(GPIOA, LL_GPIO_PIN_7 | LL_GPIO_PIN_6, LL_GPIO_PULL_NO);
+	set_gpio_output(EXT_FLASH_CS_PORT, EXT_FLASH_CS_PIN, true);
+	set_gpio_output(EXT_FLASH_IO2_PORT, EXT_FLASH_IO2_PIN, true);
+	set_gpio_output(EXT_FLASH_IO3_PORT, EXT_FLASH_IO3_PIN, true);
 
-	LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_10);
-	LL_GPIO_SetOutputPin(GPIOA, LL_GPIO_PIN_7 | LL_GPIO_PIN_6);
-
-	LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_2 | LL_GPIO_PIN_1, LL_GPIO_MODE_ANALOG);
-	LL_GPIO_SetPinMode(GPIOA, LL_GPIO_PIN_5, LL_GPIO_MODE_ANALOG);
-	LL_GPIO_SetPinPull(GPIOB, LL_GPIO_PIN_2 | LL_GPIO_PIN_1, LL_GPIO_PULL_NO);
-	LL_GPIO_SetPinPull(GPIOA, LL_GPIO_PIN_5, LL_GPIO_PULL_NO);
+	set_gpio_analog(EXT_FLASH_CLK_PORT, EXT_FLASH_CLK_PIN);
+	set_gpio_analog(EXT_FLASH_IO0_PORT, EXT_FLASH_IO0_PIN);
+	set_gpio_analog(EXT_FLASH_IO1_PORT, EXT_FLASH_IO1_PIN);
 }
 
 static void prepare_board_for_stop(void)
@@ -177,8 +244,8 @@ int main(void)
 	printk("Entering %s now. Reset the board to exit this test.\n", LOW_POWER_STOP_NAME);
 	k_msleep(20);
 
-	SysTick->CTRL &= ~SysTick_CTRL_ENABLE_Msk;
 	prepare_board_for_stop();
+	SysTick->CTRL &= ~SysTick_CTRL_ENABLE_Msk;
 	__disable_irq();
 
 	LL_PWR_ClearFlag_STOP();
