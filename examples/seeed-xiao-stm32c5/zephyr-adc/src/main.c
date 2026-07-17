@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Seeed Technology Co., Ltd.
  * SPDX-License-Identifier: Apache-2.0
  *
- * ADC demo: reads XIAO A0-A3 (PA0-PA3, ADC1_IN0-ADC1_IN3).
+ * ADC demo: reads XIAO A0-A3 (PA0-PA3, ADC2_IN0-ADC2_IN3).
  * Adapted from Zephyr samples/drivers/adc/adc_dt.
  */
 
@@ -67,7 +67,10 @@ static int read_adc_one(const struct adc_dt_spec *adc, uint16_t *raw_avg,
 
 	*raw_avg = raw_sum / ADC_AVG_SAMPLES;
 	*mv = *raw_avg;
-	adc_raw_to_millivolts_dt(adc, mv);
+	err = adc_raw_to_millivolts_dt(adc, mv);
+	if (err) {
+		return err;
+	}
 
 	return 0;
 }

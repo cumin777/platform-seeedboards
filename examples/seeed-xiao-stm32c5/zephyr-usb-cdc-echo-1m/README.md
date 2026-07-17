@@ -19,4 +19,8 @@ This sample tests the USB-C virtual serial port on XIAO STM32C5.
 
 The `1000000` baud setting is the USB CDC ACM line-coding value reported by the host. The physical PA11/PA12 USB bus still uses USB Full Speed signaling.
 
+The sample prints a heartbeat every 5 seconds. The heartbeat includes `dtr`,
+`baud`, `rx`, `tx`, and `drop`. If `dtr=0`, the host terminal did not assert
+DTR; echo is still handled by the USB CDC interrupt path.
+
 Do not open this port at `1200` baud during the echo test, because the board keeps the UF2 1200-bps bootloader trigger enabled.

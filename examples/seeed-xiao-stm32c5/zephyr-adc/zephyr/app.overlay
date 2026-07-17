@@ -1,10 +1,18 @@
 / {
 	zephyr,user {
-		io-channels = <&adc1 0>, <&adc1 1>, <&adc1 2>, <&adc1 3>;
+		io-channels = <&adc2 0>, <&adc2 1>, <&adc2 2>, <&adc2 3>;
 	};
 };
 
 &adc1 {
+	status = "disabled";
+};
+
+&adc2 {
+	pinctrl-0 = <&adc2_in0_pa0 &adc2_in1_pa1 &adc2_in2_pa2 &adc2_in3_pa3>;
+	pinctrl-names = "default";
+	vref-mv = <3300>;
+	status = "okay";
 	#address-cells = <1>;
 	#size-cells = <0>;
 

@@ -11,24 +11,57 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/ring_buffer.h>
 
+#include <string.h>
+
 #define TARGET_BAUDRATE 1000000U
-#define ECHO_RING_BUF_SIZE 1024
+#define TX_RING_BUF_SIZE 2048
 #define HEARTBEAT_INTERVAL_MS 5000
 
 static const struct device *const cdc_dev =
 	DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
-static uint8_t echo_ring_buffer[ECHO_RING_BUF_SIZE];
-static struct ring_buf echo_ringbuf;
+static uint8_t tx_ring_buffer[TX_RING_BUF_SIZE];
+static struct ring_buf tx_ringbuf;
 static uint32_t rx_bytes;
 static uint32_t tx_bytes;
 static uint32_t drop_bytes;
 
+static uint32_t cdc_tx_put_isr(const uint8_t *buf, uint32_t len)
+{
+	uint32_t stored = ring_buf_put(&tx_ringbuf, buf, len);
+
+	if (stored < len) {
+		drop_bytes += len - stored;
+	}
+
+	if (stored > 0U) {
+		uart_irq_tx_enable(cdc_dev);
+	}
+
+	return stored;
+}
+
+static uint32_t cdc_tx_put(const uint8_t *buf, uint32_t len)
+{
+	uint32_t key;
+	uint32_t stored;
+
+	key = irq_lock();
+	stored = ring_buf_put(&tx_ringbuf, buf, len);
+	if (stored < len) {
+		drop_bytes += len - stored;
+	}
+	irq_unlock(key);
+
+	if (stored > 0U) {
+		uart_irq_tx_enable(cdc_dev);
+	}
+
+	return stored;
+}
+
 static void cdc_puts(const char *s)
 {
-	while (*s != '\0') {
-		uart_poll_out(cdc_dev, (unsigned char)*s);
-		s++;
-	}
+	(void)cdc_tx_put((const uint8_t *)s, strlen(s));
 }
 
 static void cdc_print_uint(uint32_t value)
@@ -39,7 +72,7 @@ static void cdc_print_uint(uint32_t value)
 	buf[pos] = '\0';
 
 	if (value == 0U) {
-		uart_poll_out(cdc_dev, '0');
+		(void)cdc_tx_put((const uint8_t *)"0", 1U);
 		return;
 	}
 
@@ -106,18 +139,13 @@ static void serial_cb(const struct device *dev, void *user_data)
 		if (uart_irq_rx_ready(dev)) {
 			len = uart_fifo_read(dev, buf, sizeof(buf));
 			if (len > 0) {
-				uint32_t stored = ring_buf_put(&echo_ringbuf, buf, len);
-
 				rx_bytes += len;
-				if (stored < (uint32_t)len) {
-					drop_bytes += (uint32_t)len - stored;
-				}
-				uart_irq_tx_enable(dev);
+				(void)cdc_tx_put_isr(buf, (uint32_t)len);
 			}
 		}
 
 		if (uart_irq_tx_ready(dev)) {
-			len = ring_buf_get(&echo_ringbuf, buf, sizeof(buf));
+			len = ring_buf_get(&tx_ringbuf, buf, sizeof(buf));
 			if (len == 0) {
 				uart_irq_tx_disable(dev);
 				continue;
@@ -141,7 +169,7 @@ int main(void)
 		return 0;
 	}
 
-	ring_buf_init(&echo_ringbuf, sizeof(echo_ring_buffer), echo_ring_buffer);
+	ring_buf_init(&tx_ringbuf, sizeof(tx_ring_buffer), tx_ring_buffer);
 	(void)uart_line_ctrl_set(cdc_dev, UART_LINE_CTRL_DCD, 1);
 	(void)uart_line_ctrl_set(cdc_dev, UART_LINE_CTRL_DSR, 1);
 
@@ -152,14 +180,12 @@ int main(void)
 		(void)uart_line_ctrl_get(cdc_dev, UART_LINE_CTRL_DTR, &dtr);
 		(void)uart_line_ctrl_get(cdc_dev, UART_LINE_CTRL_BAUD_RATE, &baudrate);
 
-		if (dtr != 0U && !banner_printed) {
+		if (!banner_printed) {
 			print_banner(baudrate);
 			banner_printed = true;
 		}
 
-		if (dtr != 0U) {
-			print_heartbeat(dtr, baudrate);
-		}
+		print_heartbeat(dtr, baudrate);
 
 		k_msleep(HEARTBEAT_INTERVAL_MS);
 	}
