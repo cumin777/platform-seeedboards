@@ -1,49 +1,77 @@
-/*
- * Nucleo C5A3ZG pin overlay for seeed-xiao-stm32c5 board definition.
- * LED -> PA5, console -> LPUART1 PA3/PA2, button -> PC13.
- */
+#include <zephyr/dt-bindings/adc/adc.h>
 
 / {
 	chosen {
-		zephyr,console = &lpuart1;
-		zephyr,shell-uart = &lpuart1;
+		zephyr,console = &usart2;
+		zephyr,shell-uart = &usart2;
+		zephyr,code-partition = &slot0_partition;
 	};
 
-	aliases {
-		sw0 = &nucleo_user_button;
-	};
-
-	leds {
-		user_led: led_0 {
-			gpios = <&gpioa 5 GPIO_ACTIVE_HIGH>;
-		};
-	};
-
-	nucleo_keys: nucleo_gpio_keys {
-		compatible = "gpio-keys";
-
-		nucleo_user_button: nucleo_button {
-			label = "USER";
-			gpios = <&gpioc 13 GPIO_ACTIVE_HIGH>;
-			zephyr,code = <INPUT_KEY_0>;
-		};
-	};
-};
-
-&usart1 {
-	status = "disabled";
-};
-
-&lpuart1 {
-	pinctrl-0 = <&lpuart1_tx_pa3 &lpuart1_rx_pa2>;
-	pinctrl-names = "default";
-	current-speed = <115200>;
-	tx-rx-swap;
-	status = "okay";
-};
-
-/ {
 	zephyr,user {
 		io-channels = <&adc1 0>, <&adc1 1>, <&adc1 2>, <&adc1 3>;
 	};
+};
+
+&lpuart1 {
+	status = "disabled";
+};
+
+&boot_partition {
+	reg = <0x00000000 DT_SIZE_K(32)>;
+};
+
+&slot0_partition {
+	reg = <0x00008000 DT_SIZE_K(488)>;
+};
+
+&usart2 {
+	pinctrl-0 = <&usart2_tx_pd5 &usart2_rx_pd6>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+&adc1 {
+	pinctrl-0 = <&adc1_in0_pa0 &adc1_in1_pa1 &adc1_in2_pa2 &adc1_in3_pa3>;
+	pinctrl-names = "default";
+	vref-mv = <3300>;
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 289)>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@1 {
+		reg = <1>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 289)>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@2 {
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 289)>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 289)>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&adc2 {
+	status = "disabled";
 };
