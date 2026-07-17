@@ -23,6 +23,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/ring_buffer.h>
 #include <zephyr/sys/util.h>
 
@@ -66,7 +67,7 @@
 #define IMU_INTEGRAL_LIMIT_MC_S 180000
 #define FLASH_TEST_OFFSET 0x00100000
 #define FLASH_TEST_LEN 256
-#define TX_RING_BUF_SIZE 2048
+#define TX_RING_BUF_SIZE 4096
 #define PRINT_BUF_SIZE 512
 #define LSM6DSL_REG_WHO_AM_I 0x0f
 #define LSM6DSL_REG_INT1_CTRL 0x0d
@@ -84,8 +85,30 @@
 #define LSM6DSL_CTRL3_C_BDU BIT(6)
 #define LSM6DSL_CTRL3_C_IF_INC BIT(2)
 #define LSM6DSL_INT1_DRDY_XL BIT(0)
-#define CAN_NOMINAL_BITRATE 500000U
-#define CAN_DATA_BITRATE 2000000U
+#ifndef CAN_TEST_NODE
+#define CAN_TEST_NODE 1
+#endif
+
+#if CAN_TEST_NODE == 1
+#define CAN_NODE_NAME "A"
+#define CAN_PEER_NODE 2U
+#define CAN_TX_ID 0x701U
+#define CAN_RX_ID 0x702U
+#elif CAN_TEST_NODE == 2
+#define CAN_NODE_NAME "B"
+#define CAN_PEER_NODE 1U
+#define CAN_TX_ID 0x702U
+#define CAN_RX_ID 0x701U
+#else
+#error "CAN_TEST_NODE must be 1 (node A) or 2 (node B)"
+#endif
+
+#define CAN_NOMINAL_BITRATE 1000000U
+#define CAN_DATA_BITRATE 8000000U
+#define CAN_TEST_MAGIC 0xc5080701U
+#define CAN_TEST_PAYLOAD_LEN 16U
+#define CAN_TEST_INTERVAL_MS 500U
+#define CAN_TEST_SEND_TIMEOUT_MS 100U
 
 static const struct device *const cdc_dev =
 	DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
@@ -122,6 +145,7 @@ static const char *const adc_labels[] = {
 };
 
 static uint8_t tx_ring_buffer[TX_RING_BUF_SIZE];
+static char cdc_print_buffer[PRINT_BUF_SIZE];
 static struct ring_buf tx_ringbuf;
 static uint32_t tx_bytes;
 static uint32_t rx_bytes;
@@ -147,6 +171,16 @@ static enum can_state can_last_state = CAN_STATE_STOPPED;
 static struct can_bus_err_cnt can_last_err;
 static int can_core_clock_ret;
 static uint32_t can_core_clock_hz;
+static int can_rx_filter_ret;
+static atomic_t can_tx_ok;
+static atomic_t can_tx_fail;
+static atomic_t can_rx_total;
+static atomic_t can_rx_valid;
+static atomic_t can_rx_invalid;
+static atomic_t can_rx_seq_gap;
+static uint32_t can_tx_seq;
+static uint32_t can_rx_last_seq;
+static bool can_rx_have_seq;
 static uint32_t heater_pwm_duty_permille;
 static int heater_pwm_ret;
 static int imu_init_ret;
@@ -216,6 +250,7 @@ struct imu_data_status {
 };
 
 static struct k_thread led_thread_data;
+static struct k_thread can_test_thread_data;
 static struct imu_pid_state imu_pid;
 static struct imu_pid_report imu_pid_status;
 static struct imu_data_status imu_data;
@@ -225,6 +260,7 @@ static atomic_t imu_irq_count;
 static atomic_t imu_skipped_count;
 static atomic_t imu_work_pending;
 K_THREAD_STACK_DEFINE(led_stack, 512);
+K_THREAD_STACK_DEFINE(can_test_stack, 1536);
 K_MUTEX_DEFINE(imu_i2c_lock);
 
 static void imu_data_work_handler(struct k_work *work);
@@ -252,23 +288,22 @@ static uint32_t cdc_tx_put(const uint8_t *buf, uint32_t len)
 
 static void cdc_printf(const char *fmt, ...)
 {
-	char buf[PRINT_BUF_SIZE];
 	va_list args;
 	int len;
 
 	va_start(args, fmt);
-	len = vsnprintf(buf, sizeof(buf), fmt, args);
+	len = vsnprintf(cdc_print_buffer, sizeof(cdc_print_buffer), fmt, args);
 	va_end(args);
 
 	if (len < 0) {
 		return;
 	}
 
-	if (len >= (int)sizeof(buf)) {
-		len = sizeof(buf) - 1;
+	if (len >= (int)sizeof(cdc_print_buffer)) {
+		len = sizeof(cdc_print_buffer) - 1;
 	}
 
-	(void)cdc_tx_put((const uint8_t *)buf, (uint32_t)len);
+	(void)cdc_tx_put((const uint8_t *)cdc_print_buffer, (uint32_t)len);
 }
 
 static void serial_cb(const struct device *dev, void *user_data)
@@ -732,8 +767,70 @@ static void update_can_state(void)
 	can_state_ret = can_get_state(can_dev, &can_last_state, &can_last_err);
 }
 
+static void can_rx_callback(const struct device *dev, struct can_frame *frame,
+			    void *user_data)
+{
+	uint8_t payload_len = can_dlc_to_bytes(frame->dlc);
+	uint32_t seq;
+
+	ARG_UNUSED(dev);
+	ARG_UNUSED(user_data);
+
+	atomic_inc(&can_rx_total);
+	if (frame->id != CAN_RX_ID ||
+	    (frame->flags & (CAN_FRAME_FDF | CAN_FRAME_BRS)) !=
+		(CAN_FRAME_FDF | CAN_FRAME_BRS) ||
+	    payload_len != CAN_TEST_PAYLOAD_LEN ||
+	    sys_get_le32(&frame->data[0]) != CAN_TEST_MAGIC ||
+	    frame->data[4] != CAN_PEER_NODE || frame->data[5] != 1U) {
+		atomic_inc(&can_rx_invalid);
+		return;
+	}
+
+	seq = sys_get_le32(&frame->data[8]);
+	if (can_rx_have_seq && seq != can_rx_last_seq + 1U) {
+		atomic_add(&can_rx_seq_gap,
+			   seq > can_rx_last_seq ? seq - can_rx_last_seq - 1U : 1U);
+	}
+	can_rx_last_seq = seq;
+	can_rx_have_seq = true;
+
+	if (frame->data[12] != (uint8_t)(0xa5U ^ seq) ||
+	    frame->data[13] != (uint8_t)(0x5aU ^ (seq >> 8)) ||
+	    frame->data[14] != (uint8_t)(0x3cU ^ (seq >> 16)) ||
+	    frame->data[15] != (uint8_t)(0xc3U ^ (seq >> 24))) {
+		atomic_inc(&can_rx_invalid);
+		return;
+	}
+
+	atomic_inc(&can_rx_valid);
+}
+
+static void can_prepare_test_frame(struct can_frame *frame, uint32_t seq)
+{
+	frame->id = CAN_TX_ID;
+	frame->flags = CAN_FRAME_FDF | CAN_FRAME_BRS;
+	frame->dlc = can_bytes_to_dlc(CAN_TEST_PAYLOAD_LEN);
+	sys_put_le32(CAN_TEST_MAGIC, &frame->data[0]);
+	frame->data[4] = CAN_TEST_NODE;
+	frame->data[5] = 1U;
+	frame->data[6] = 0U;
+	frame->data[7] = 0U;
+	sys_put_le32(seq, &frame->data[8]);
+	frame->data[12] = (uint8_t)(0xa5U ^ seq);
+	frame->data[13] = (uint8_t)(0x5aU ^ (seq >> 8));
+	frame->data[14] = (uint8_t)(0x3cU ^ (seq >> 16));
+	frame->data[15] = (uint8_t)(0xc3U ^ (seq >> 24));
+}
+
 static bool init_can_controller(void)
 {
+	const struct can_filter peer_filter = {
+		.flags = 0,
+		.id = CAN_RX_ID,
+		.mask = 0x7ffU,
+	};
+
 	memset(&can_last_err, 0, sizeof(can_last_err));
 	can_mode_ret = -ENODEV;
 	can_bitrate_ret = -ENODEV;
@@ -742,12 +839,27 @@ static bool init_can_controller(void)
 	can_state_ret = -ENODEV;
 	can_core_clock_ret = -ENODEV;
 	can_core_clock_hz = 0U;
+	can_rx_filter_ret = -ENODEV;
+	atomic_set(&can_tx_ok, 0);
+	atomic_set(&can_tx_fail, 0);
+	atomic_set(&can_rx_total, 0);
+	atomic_set(&can_rx_valid, 0);
+	atomic_set(&can_rx_invalid, 0);
+	atomic_set(&can_rx_seq_gap, 0);
+	can_tx_seq = 0U;
+	can_rx_last_seq = 0U;
+	can_rx_have_seq = false;
 
 	if (!device_is_ready(can_dev)) {
 		return false;
 	}
 
 	can_core_clock_ret = can_get_core_clock(can_dev, &can_core_clock_hz);
+	can_rx_filter_ret = can_add_rx_filter(can_dev, can_rx_callback, NULL,
+					      &peer_filter);
+	if (can_rx_filter_ret < 0) {
+		return false;
+	}
 
 	can_mode_ret = can_set_mode(can_dev, CAN_MODE_FD);
 	if (can_mode_ret != 0) {
@@ -1030,6 +1142,39 @@ static void led_thread(void *p1, void *p2, void *p3)
 	}
 }
 
+static void can_test_thread(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	while (true) {
+		struct can_frame frame = { 0 };
+		int ret;
+
+		can_prepare_test_frame(&frame, can_tx_seq++);
+		ret = can_send(can_dev, &frame,
+			       K_MSEC(CAN_TEST_SEND_TIMEOUT_MS), NULL, NULL);
+		if (ret == 0) {
+			atomic_inc(&can_tx_ok);
+		} else {
+			atomic_inc(&can_tx_fail);
+		}
+
+		k_msleep(CAN_TEST_INTERVAL_MS);
+	}
+}
+
+/* Return a percentage in basis points, i.e. 1234 means 12.34%. */
+static uint32_t can_loss_rate_bp(uint32_t lost, uint32_t total)
+{
+	if (total == 0U) {
+		return 0U;
+	}
+
+	return (uint32_t)(((uint64_t)lost * 10000U) / total);
+}
+
 static void print_status(uint32_t loop_count, uint32_t dtr, uint32_t baudrate,
 			 const struct flash_cycle_result *flash_result)
 {
@@ -1068,6 +1213,28 @@ static void print_status(uint32_t loop_count, uint32_t dtr, uint32_t baudrate,
 			   can_last_err.tx_err_cnt);
 		cdc_printf("  CAN clock   : get=%d, frequency=%u Hz\r\n",
 			   can_core_clock_ret, can_core_clock_hz);
+		{
+			uint32_t tx_ok = (uint32_t)atomic_get(&can_tx_ok);
+			uint32_t tx_fail = (uint32_t)atomic_get(&can_tx_fail);
+			uint32_t tx_total = tx_ok + tx_fail;
+			uint32_t tx_loss_rate = can_loss_rate_bp(tx_fail, tx_total);
+			uint32_t rx_total = (uint32_t)atomic_get(&can_rx_total);
+			uint32_t rx_valid = (uint32_t)atomic_get(&can_rx_valid);
+			uint32_t rx_invalid = (uint32_t)atomic_get(&can_rx_invalid);
+			uint32_t rx_lost = (uint32_t)atomic_get(&can_rx_seq_gap);
+			uint32_t rx_expected = rx_valid + rx_lost;
+			uint32_t rx_loss_rate = can_loss_rate_bp(rx_lost, rx_expected);
+
+			cdc_printf("  CAN test    : node=%s tx=0x%03x rx=0x%03x, 1M/8M FD+BRS, filter=%d\r\n",
+				   CAN_NODE_NAME, CAN_TX_ID, CAN_RX_ID,
+				   can_rx_filter_ret);
+			cdc_printf("  TX packets  : total=%u, success=%u, failed=%u, lost=%u, loss_rate=%u.%02u%%\r\n",
+				   tx_total, tx_ok, tx_fail, tx_fail,
+				   tx_loss_rate / 100U, tx_loss_rate % 100U);
+			cdc_printf("  RX packets  : total=%u, valid=%u, invalid=%u, lost=%u, loss_rate=%u.%02u%%\r\n",
+				   rx_total, rx_valid, rx_invalid, rx_lost,
+				   rx_loss_rate / 100U, rx_loss_rate % 100U);
+		}
 	} else {
 		cdc_printf("  CAN         : FDCAN2 not-ready, start=%d\r\n",
 			   can_start_ret);
@@ -1276,6 +1443,12 @@ int main(void)
 	spi_feature_ready = device_is_ready(ext_flash);
 	can_phy_ready = init_can_transceiver();
 	can_controller_ready = init_can_controller();
+	if (can_controller_ready) {
+		(void)k_thread_create(&can_test_thread_data, can_test_stack,
+				      K_THREAD_STACK_SIZEOF(can_test_stack),
+				      can_test_thread, NULL, NULL, NULL,
+				      6, 0, K_NO_WAIT);
+	}
 	battery_ready = init_battery();
 	flash_ready = init_flash();
 	cdc_ready = init_cdc();

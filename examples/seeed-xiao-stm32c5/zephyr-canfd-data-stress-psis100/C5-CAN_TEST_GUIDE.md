@@ -1,6 +1,6 @@
 # XIAO STM32C5 CAN FD 100m Throughput Test Guide
 
-本固件用于测试 XIAO STM32C5 在 100m CAN 线缆下的 CAN FD 发送、接收、双向/并发速率，并通过串口统计吞吐、错误率和丢包率。
+本固件用于测试 XIAO STM32C5 在 100m CAN 线缆下的 CAN FD 发送、接收、双向/并发速率，并通过串口统计吞吐量。
 
 ## 上位机设置
 
@@ -13,8 +13,11 @@ USB-CAN/分析仪需要和固件命令保持一致：
 | BRS | 开启 |
 | 仲裁段速率 | 例如 `1000000`，即 1 Mbps |
 | 数据段速率 | 例如 `8000000`，即 8 Mbps |
+| 发送帧 ID | 标准帧 ID `00000504`，不要使用默认示例里的 `00000009` |
 | 终端电阻 | 线缆两端各 120 ohm |
 | 工作模式 | Normal/Active，不能 Silent |
+
+说明：固件在数据段 `8000000` 时会手动把 XIAO data phase 采样点调到接近 80%，用于匹配部分 USB-CAN 工具的 8 Mbps 默认时序。启动命令后串口会打印实际 `brp/seg1/seg2/sjw/sample_point`。
 
 ## 命令格式
 
@@ -36,6 +39,25 @@ cfd start <tx|rx|bidi|loop> [nominal] [data] [bytes] [seconds] [fps] [can|fd|fd-
 | `fps` | 目标发送帧率，`0` 表示尽可能满速 |
 | `fd-brs` | CAN FD + BRS，高速数据段测试使用这个 |
 
+## 发送 ID 设置
+
+固件默认发送标准帧 ID 为 `0x504`。多块 XIAO 同时发送时，必须给每块板设置不同发送 ID，避免同 ID 不同数据导致位冲突。
+
+查询当前发送 ID：
+
+```text
+cfd id
+```
+
+设置发送 ID：
+
+```text
+cfd id 504
+cfd id 505
+```
+
+说明：`cfd id` 参数按十六进制解析，支持 `504`、`0x504`、`00000504` 这类写法；当前只配置标准帧 ID，范围 `0x000..0x7ff`。建议在 `cfd start ...` 前设置。
+
 ## 发送测试
 
 XIAO 发送，上位机接收并确认能正常打印数据段：
@@ -50,6 +72,15 @@ cfd start tx 1000000 8000000 64 30 0 fd-brs
 cfd start tx 1000000 8000000 64 30 1000 fd-brs
 ```
 
+1M/8M 长短帧发送命令：
+
+```text
+cfd start tx 1000000 8000000 8 30 0 fd-brs fixed-8
+cfd start tx 1000000 8000000 64 30 0 fd-brs fixed-64
+cfd start tx 1000000 8000000 64 30 0 fd-brs alt-8-64
+cfd start tx 1000000 8000000 64 30 0 fd-brs mix-canfd
+```
+
 ## 接收测试
 
 上位机周期发送 CAN FD+BRS 帧，XIAO 只接收：
@@ -58,9 +89,28 @@ cfd start tx 1000000 8000000 64 30 1000 fd-brs
 cfd start rx 1000000 8000000 64 30 0 fd-brs
 ```
 
+上位机发送列表中的帧配置建议：
+
+| 项目 | 设置 |
+| --- | --- |
+| 帧类型 | 标准帧 |
+| CAN类型 | CANFD加速 |
+| 帧格式 | 数据帧 |
+| ID(Hex) | `00000504`，如果当前是 `00000009`，需要改成 `00000504` |
+| 数据长度 | `64`，短帧测试可用 `8` |
+| 数据 | 至少以 `04 D5 5F 0C 00 00 00 00` 开头 |
+
 接收端不需要特殊配置长短帧，固件会按实际收到的 DLC 统计长度分布。
 
-## 双向/并发测试
+1M/8M 长短帧接收时，XIAO 使用同一个命令：
+
+```text
+cfd start rx 1000000 8000000 64 30 0 fd-brs
+```
+
+上位机分别发送固定 8 字节、固定 64 字节、8/64 交替，或 8/12/16/20/24/32/48/64 循环帧。测试结束后看 `rx_len_hist` 确认长度分布。
+
+## 双向测试
 
 先让上位机开始周期发送 CAN FD+BRS 帧，然后 XIAO 输入：
 
@@ -76,6 +126,59 @@ cfd start bidi 1000000 8000000 64 30 0 fd-brs
 | 并发 | 两边同时高负载收发，重点验证极限吞吐和稳定性 |
 
 实际命令都用 `bidi`，区别在于上位机发送频率。先低频验证双向，再逐步提高上位机发送频率做并发压力测试。
+
+1M/8M 长短帧双向命令：
+
+```text
+cfd start bidi 1000000 8000000 8 30 0 fd-brs fixed-8
+cfd start bidi 1000000 8000000 64 30 0 fd-brs fixed-64
+cfd start bidi 1000000 8000000 64 30 0 fd-brs alt-8-64
+cfd start bidi 1000000 8000000 64 30 0 fd-brs mix-canfd
+```
+
+若满压双向错误较多，先限制 XIAO 发送帧率验证稳定性：
+
+```text
+cfd start bidi 1000000 8000000 64 30 1000 fd-brs fixed-64
+```
+
+## 多节点并发测试
+
+推荐接线：
+
+```text
+[120R] XIAO A ---- USB-CAN ---- XIAO B [120R]
+```
+
+连接要求：
+
+| 项目 | 要求 |
+| --- | --- |
+| CANH | XIAO A、USB-CAN、XIAO B 的 CANH 全部接在一起 |
+| CANL | XIAO A、USB-CAN、XIAO B 的 CANL 全部接在一起 |
+| GND | 三个设备 GND 共地 |
+| 终端电阻 | 只保留总线物理两端的 120 ohm |
+| USB-CAN 终端 | USB-CAN 在中间时关闭终端电阻 |
+
+两块 XIAO 同时发送、USB-CAN 接收监控时，先分别设置不同发送 ID：
+
+```text
+XIAO A:
+cfd id 504
+cfd start tx 1000000 8000000 64 30 0 fd-brs fixed-64
+
+XIAO B:
+cfd id 505
+cfd start tx 1000000 8000000 64 30 0 fd-brs fixed-64
+```
+
+长短帧并发可把 `fixed-64` 换成 `fixed-8`、`alt-8-64` 或 `mix-canfd`。如果满压错误较多，先限制发送帧率：
+
+```text
+cfd start tx 1000000 8000000 64 30 1000 fd-brs fixed-64
+```
+
+USB-CAN 作为监控端时只接收即可；如果 USB-CAN 也参与发送，需要使用第三个不同 ID，例如 `0x506`。
 
 ## 长短帧发送
 
@@ -193,4 +296,4 @@ rx_overrun = 0
 上位机能持续正常打印接收到的数据段
 ```
 
-若出现 `warning/passive/bus-off`，或 `ack/bit/crc/form/stuff` 快速增长，说明当前线长、速率、负载或终端条件下不稳定，需要降低数据段速率或帧率继续测试。
+若出现 `warning/passive/bus-off`，或 `ack/bit/crc/form/stuff` 快速增长，说明当前线长、速率、负载或终端条件下不稳定。

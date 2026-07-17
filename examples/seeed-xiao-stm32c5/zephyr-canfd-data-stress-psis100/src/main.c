@@ -28,10 +28,18 @@
 #define TX_THREAD_STACK_SIZE 2048
 #define STATS_THREAD_STACK_SIZE 2048
 #define THREAD_PRIORITY 5
-#define FW_VERSION "2026-07-09.1"
+#define FW_VERSION "2026-07-16.1"
 #define DLC_BUCKET_COUNT 16
+#define CANFD_1M_DATA_BITRATE 1000000U
+#define CANFD_5M_DATA_BITRATE 5000000U
 #define CANFD_8M_DATA_BITRATE 8000000U
+#define CANFD_1M_DATA_SAMPLE_POINT 800U
+#define CANFD_5M_DATA_SAMPLE_POINT 750U
 #define CANFD_8M_DATA_SAMPLE_POINT 800U
+#define CAN_NOMINAL_500K_BITRATE 500000U
+#define CAN_NOMINAL_500K_SAMPLE_POINT 750U
+#define CAN_NOMINAL_1M_BITRATE 1000000U
+#define CAN_NOMINAL_1M_SAMPLE_POINT 750U
 #define CAN_SYNC_SEG_TQ 1U
 
 #define FDCAN2_BASE_ADDR 0x4000a800UL
@@ -583,27 +591,63 @@ static uint32_t timing_sample_point_permille(const struct can_timing *timing)
 static int set_data_bitrate(const struct stress_config *new_cfg)
 {
 	struct can_timing timing_data = { 0 };
+	uint16_t target_sample_point;
+	bool use_override = true;
+	bool predefined_timing = false;
+	bool maximize_sjw = false;
 	uint32_t sample_point;
 	int calc_err;
 	int ret;
 
-	if (new_cfg->data_bitrate != CANFD_8M_DATA_BITRATE) {
+	switch (new_cfg->data_bitrate) {
+	case CANFD_1M_DATA_BITRATE:
+		/*
+		 * Match the host exactly: 100 MHz / (BRP 5 * 20 TQ) = 1 Mbit/s.
+		 * This gives Sync=50 ns, SEG1=750 ns, SEG2=200 ns, SJW=100 ns.
+		 */
+		target_sample_point = CANFD_1M_DATA_SAMPLE_POINT;
+		timing_data.prescaler = 5U;
+		timing_data.phase_seg1 = 15U;
+		timing_data.phase_seg2 = 4U;
+		timing_data.sjw = 2U;
+		predefined_timing = true;
+		break;
+	case CANFD_5M_DATA_BITRATE:
+		/* 100 MHz / (BRP 1 * 20 TQ), sample point = 15 / 20 = 75%. */
+		target_sample_point = CANFD_5M_DATA_SAMPLE_POINT;
+		break;
+	case CANFD_8M_DATA_BITRATE:
+		target_sample_point = CANFD_8M_DATA_SAMPLE_POINT;
+		maximize_sjw = true;
+		break;
+	default:
+		use_override = false;
+		break;
+	}
+
+	if (!use_override) {
 		return can_set_bitrate_data(can_dev, new_cfg->data_bitrate);
 	}
 
-	ret = can_calc_timing_data(can_dev, &timing_data, new_cfg->data_bitrate,
-				   CANFD_8M_DATA_SAMPLE_POINT);
-	if (ret < 0) {
-		last_config_step = "can_calc_timing_data(data-8m)";
-		return ret;
+	if (predefined_timing) {
+		calc_err = 0;
+	} else {
+		ret = can_calc_timing_data(can_dev, &timing_data, new_cfg->data_bitrate,
+					   target_sample_point);
+		if (ret < 0) {
+			last_config_step = "can_calc_timing_data(data)";
+			return ret;
+		}
+		calc_err = ret;
 	}
-	calc_err = ret;
 
-	timing_data.sjw = timing_data.phase_seg2;
+	if (maximize_sjw) {
+		timing_data.sjw = timing_data.phase_seg2;
+	}
 
 	ret = can_set_timing_data(can_dev, &timing_data);
 	if (ret != 0) {
-		last_config_step = "can_set_timing_data(data-8m)";
+		last_config_step = "can_set_timing_data(data)";
 		return ret;
 	}
 
@@ -611,10 +655,66 @@ static int set_data_bitrate(const struct stress_config *new_cfg)
 	printk("data timing override bitrate=%u target_sp=%u.%u%% actual_sp=%u.%u%% "
 	       "brp=%u seg1=%u seg2=%u sjw=%u calc_err=%d\n",
 	       new_cfg->data_bitrate,
-	       CANFD_8M_DATA_SAMPLE_POINT / 10U, CANFD_8M_DATA_SAMPLE_POINT % 10U,
+	       target_sample_point / 10U, target_sample_point % 10U,
 	       sample_point / 10U, sample_point % 10U,
 	       timing_data.prescaler, timing_data.prop_seg + timing_data.phase_seg1,
 	       timing_data.phase_seg2, timing_data.sjw, calc_err);
+
+	return 0;
+}
+
+static int set_nominal_bitrate(const struct stress_config *new_cfg)
+{
+	struct can_timing timing = { 0 };
+	uint16_t target_sample_point;
+	bool predefined_timing = false;
+	uint32_t sample_point;
+	int calc_err;
+	int ret;
+
+	if (new_cfg->nominal_bitrate == CAN_NOMINAL_1M_BITRATE) {
+		/*
+		 * Match the host exactly: 100 MHz / (BRP 5 * 20 TQ) = 1 Mbit/s.
+		 * This gives Sync=50 ns, SEG1=700 ns, SEG2=250 ns, SJW=100 ns.
+		 */
+		target_sample_point = CAN_NOMINAL_1M_SAMPLE_POINT;
+		timing.prescaler = 5U;
+		timing.phase_seg1 = 14U;
+		timing.phase_seg2 = 5U;
+		timing.sjw = 2U;
+		predefined_timing = true;
+	} else if (new_cfg->nominal_bitrate == CAN_NOMINAL_500K_BITRATE) {
+		target_sample_point = CAN_NOMINAL_500K_SAMPLE_POINT;
+	} else {
+		return can_set_bitrate(can_dev, new_cfg->nominal_bitrate);
+	}
+
+	if (predefined_timing) {
+		calc_err = 0;
+	} else {
+		ret = can_calc_timing(can_dev, &timing, new_cfg->nominal_bitrate,
+				      target_sample_point);
+		if (ret < 0) {
+			last_config_step = "can_calc_timing(nominal)";
+			return ret;
+		}
+		calc_err = ret;
+	}
+
+	ret = can_set_timing(can_dev, &timing);
+	if (ret != 0) {
+		last_config_step = "can_set_timing(nominal)";
+		return ret;
+	}
+
+	sample_point = timing_sample_point_permille(&timing);
+	printk("nominal timing override bitrate=%u target_sp=%u.%u%% actual_sp=%u.%u%% "
+	       "brp=%u seg1=%u seg2=%u sjw=%u calc_err=%d\n",
+	       new_cfg->nominal_bitrate,
+	       target_sample_point / 10U, target_sample_point % 10U,
+	       sample_point / 10U, sample_point % 10U,
+	       timing.prescaler, timing.prop_seg + timing.phase_seg1,
+	       timing.phase_seg2, timing.sjw, calc_err);
 
 	return 0;
 }
@@ -644,7 +744,7 @@ static int configure_and_start_can(const struct stress_config *new_cfg)
 		return ret;
 	}
 
-	ret = can_set_bitrate(can_dev, new_cfg->nominal_bitrate);
+	ret = set_nominal_bitrate(new_cfg);
 	if (ret != 0) {
 		last_config_step = "can_set_bitrate(nominal)";
 		return ret;

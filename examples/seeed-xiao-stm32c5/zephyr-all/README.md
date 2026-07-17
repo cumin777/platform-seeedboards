@@ -8,19 +8,30 @@ Small bring-up sample with only:
 - A4/D4/PB7 PWM output at 1 kHz, 50% duty
 - IMU temperature PI compensation with direct polled I2C temperature reads and PA8/TIM1_CH1 heater PWM
 - IMU accel/gyro raw readout using the LSM6DS3TR-C INT1 data-ready GPIO interrupt
-- CAN transceiver enable by driving CAN_STB/PB14 low
-- I2C, SPI/XSPI, and CAN/CAN FD configs enabled with runtime ready/start status reporting
-- Step 2 first phase only reports the FDCAN kernel clock through `can_get_core_clock()`; it does not change CAN timing, enter loopback, or transmit a frame.
+- CAN FD two-board test at 1 Mbps arbitration / 8 Mbps data, using normal-mode FD+BRS frames at 2 fps
+- Node A sends standard ID `0x701` and checks `0x702`; node B sends `0x702` and checks `0x701`
 - Battery voltage readout through BAT_EN/PE2 and BAT_Reading/PA4
 - External flash erase/write/read/verify every 5 seconds
 
-Build:
+Build node A for the first board:
 
 ```sh
-pio run
+pio run -e xiao-c5-can-node-a
 ```
 
-Monitor:
+Build node B for the second board:
+
+```sh
+pio run -e xiao-c5-can-node-b
+```
+
+Connect CAN_H to CAN_H and CAN_L to CAN_L, with a 120-ohm terminator at each end
+of the bus. The 5-second USB report must show increasing TX `success` and RX
+`valid` counters, with `invalid=0`, `lost=0`, and both loss rates at `0.00%`.
+The packet counters are cumulative since boot. TX `lost` equals TX `failed`;
+RX `lost` is inferred from gaps in the peer sequence number.
+
+Monitor either board:
 
 ```sh
 pio device monitor -b 1000000
