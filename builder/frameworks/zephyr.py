@@ -87,6 +87,10 @@ for boards_subdir in ["arm", "seeed"]:
 
 import re
 import time
+import sys
+
+sys.path.insert(0, join(platform_dir, "builder", "frameworks"))
+from zephyr_patch import apply_framework_patches
 
 
 def _is_commit_hash(value):
@@ -267,6 +271,8 @@ if os.path.isdir(_overrides_root):
             _dst = join(framework_dir, _rel)
             os.makedirs(os.path.dirname(_dst), exist_ok=True)
             _shutil.copy2(_src, _dst)
+
+apply_framework_patches(platform_dir, framework_dir)
 
 SConscript(
     join(framework_dir, "scripts", "platformio", "platformio-build.py"), exports="env")

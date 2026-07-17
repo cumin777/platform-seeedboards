@@ -73,6 +73,15 @@
 	};
 };
 
+&gpiob {
+	ext_flash_cs_default: ext-flash-cs-default {
+		gpio-hog;
+		gpios = <10 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "EXT_FLASH_CS";
+	};
+};
+
 /*
  * FDCAN peripheral definitions.
  *
@@ -216,6 +225,10 @@
 	status = "okay";
 };
 
+&clk_lse {
+	status = "okay";
+};
+
 &flash0 {
 	partitions {
 		compatible = "fixed-partitions";
@@ -336,7 +349,7 @@
 
 &rtc {
 	clocks = <&rcc STM32_CLOCK(APB3, 21)>,
-		 <&rcc STM32_SRC_LSI RTC_SEL(2)>;
+		 <&rcc STM32_SRC_LSE RTC_SEL(1)>;
 	status = "okay";
 };
 

@@ -8,7 +8,7 @@
                 "0x00C5"
             ]
         ],
-        "mcu": "stm32c5a3zgt6",
+        "mcu": "stm32c5a3cg",
         "zephyr": {
             "variant": "xiao_stm32c5"
         }
