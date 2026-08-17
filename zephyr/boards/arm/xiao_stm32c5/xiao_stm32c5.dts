@@ -62,7 +62,9 @@
 	};
 
 	/* BAT_EN controls the on-board battery-voltage divider. */
-	battery_control: battery-control {
+	battery_adc_ctrl: battery-adc-ctrl {
+		compatible = "gpio-leds";
+
 		bat_en: bat-en {
 			gpios = <&gpioa 15 GPIO_ACTIVE_HIGH>;
 			label = "BAT_EN/PA15";
