@@ -78,6 +78,18 @@
 			regulators {
 				compatible = "nordic,npm1300-regulator";
 
+				/*
+				 * BUCK2 supplies VSYS_3V3, which powers both the nRF54
+				 * application and the SAMD11 USB debugger. Keep this rail
+				 * enabled during XIAO nRF54LM20A development; disabling it
+				 * also removes power from the USB debugger.
+				 */
+				vsys_3v3: BUCK2 {
+					regulator-always-on;
+					regulator-min-microvolt = <3300000>;
+					regulator-max-microvolt = <3300000>;
+				};
+
 				imu_vdd: dmic_vdd: LDO1 {
 					regulator-init-microvolt = <3300000>;
 					regulator-min-microvolt = <3300000>;
