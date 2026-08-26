@@ -14,3 +14,7 @@ Apply the repository rules in `AGENTS.md` first. This skill ensures that platfor
 5. Immediately after changing any platform source file, apply the same change to the selected local PlatformIO platform package. Keep the fork checkout and that one cached package aligned before compiling. Do not modify other platform-cache copies, run `pio pkg update`, or change the fork branch/commit reference during the development loop.
 6. Every time a sample compiles new firmware, run `pio run -d <sample> -e <environment> -t clean` after synchronization, then run the sample build.
 7. When the developer explicitly asks to stage, commit, push, and create or update a GitHub pull request, invoke the `yeet` skill. It owns the Git and PR workflow.
+
+## Customer-facing language
+
+Write customer-facing repository content in clear, technically precise English by default, including README files, comments, help text, configuration descriptions, sample output, and implementation documentation. Keep Chinese explanations in the conversation or internal notes rather than replacing deliverable content.

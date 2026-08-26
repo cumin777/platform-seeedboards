@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+
+menu "Custom wake word and keyword spotting"
+
+choice APP_MODE
+	prompt "Application mode"
+	default APP_MODE_WW_GATED_KWS
+
+config APP_MODE_WW_GATED_KWS
+	bool "Wakeword-gated keyword spotting"
+	help
+	  Run the keyword spotting model only after a wakeword is detected.
+
+config APP_MODE_WW_ONLY
+	bool "Wakeword detection only"
+
+config APP_MODE_KWS_ONLY
+	bool "Keyword spotting only"
+
+endchoice
+
+config WW_PROBABILITY_THRESHOLD
+	int "Wakeword probability threshold (per-mille)"
+	range 0 1000
+	default 990
+
+config WW_HISTORY_SIZE
+	int "Wakeword prediction-history length"
+	range 1 32
+	default 20
+
+config WW_COUNT_THRESHOLD
+	int "Wakeword detections needed in the history window"
+	range 1 WW_HISTORY_SIZE
+	default 15
+
+config KWS_PERIOD_MS
+	int "Keyword spotting window after a wakeword"
+	default 10000
+
+config KWS_EMA_ALPHA
+	int "KWS exponential moving-average coefficient (per-mille)"
+	range 0 1000
+	default 120
+
+endmenu
+
+source "Kconfig.zephyr"

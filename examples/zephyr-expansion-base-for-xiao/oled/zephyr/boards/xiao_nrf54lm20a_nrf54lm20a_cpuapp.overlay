@@ -5,6 +5,9 @@
 };
 
 &xiao_i2c {
+	zephyr,concat-buf-size = <2048>;
+	zephyr,flash-buf-max-size = <2048>;
+
 	ssd1306_128x64: ssd1306@3c {
 		compatible = "solomon,ssd1306";
 		reg = <0x3c>;
