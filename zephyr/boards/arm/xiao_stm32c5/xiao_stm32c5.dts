@@ -16,6 +16,7 @@
 #include <st/c5/stm32c5a3Xg.dtsi>
 #include <st/c5/stm32c5(9-a)3z(e-g)tx-pinctrl.dtsi>
 #include <zephyr/dt-bindings/flash_controller/xspi.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/pwm/pwm.h>
 #include "seeed_xiao_connector.dtsi"
@@ -35,6 +36,7 @@
 
 	aliases {
 		led0 = &user_led;
+		sw0 = &boot_button;
 		watchdog0 = &iwdg;
 		can0 = &fdcan2;
 		flash1 = &ext_flash;
@@ -48,6 +50,22 @@
 		user_led: led_0 {
 			gpios = <&gpiob 12 GPIO_ACTIVE_LOW>;
 			label = "User LED";
+		};
+	};
+
+	/*
+	 * User button on the BOOT0 test pad. The external button connects
+	 * PH2/BOOT0 to GND, so the internal pull-up makes this active-low.
+	 * BOOT0 is still sampled by the MCU during reset; do not hold the
+	 * button while powering on or resetting the board.
+	 */
+	buttons {
+		compatible = "gpio-keys";
+
+		boot_button: button_0 {
+			gpios = <&gpioh 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "BOOT button";
+			zephyr,code = <INPUT_KEY_0>;
 		};
 	};
 
