@@ -8,13 +8,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(main_app, LOG_LEVEL);
 
-#if defined(CONFIG_BOARD_XIAO_NRF54LM20A) || defined(CONFIG_BOARD_XIAO_NRF54LM20A_NRF54LM20A_CPUAPP)
-#define OLED_BOARD_MODEL_TEXT "nrf54lm20a"
-#elif defined(CONFIG_BOARD_XIAO_NRF54LM20B) || defined(CONFIG_BOARD_XIAO_NRF54LM20B_NRF54LM20B_CPUAPP)
 #define OLED_BOARD_MODEL_TEXT "nrf54lm20b"
-#else
-#define OLED_BOARD_MODEL_TEXT "nRF54L15"
-#endif
 
 /**
  * @brief Initializes the display device.
