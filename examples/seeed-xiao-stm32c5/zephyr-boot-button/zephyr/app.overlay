@@ -1,0 +1,21 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+/ {
+	buttons {
+		compatible = "gpio-keys";
+
+		boot_button: button_0 {
+			/* The external button connects PH2/BOOT0 to GND. */
+			gpios = <&gpioh 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "BOOT button";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	aliases {
+		sw0 = &boot_button;
+	};
+};
