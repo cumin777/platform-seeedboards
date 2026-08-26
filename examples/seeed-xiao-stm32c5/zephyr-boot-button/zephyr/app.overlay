@@ -1,1 +1,19 @@
-/* The BOOT/PH2 button is defined by the XIAO STM32C5 board DTS. */
+/* Keep the sample self-contained; the board DTS also exposes this as sw0. */
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+/ {
+	buttons {
+		compatible = "gpio-keys";
+
+		boot_button: button_0 {
+			gpios = <&gpioh 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "BOOT button";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	aliases {
+		sw0 = &boot_button;
+	};
+};
