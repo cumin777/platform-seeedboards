@@ -6,7 +6,7 @@
 	buttons {
 		compatible = "gpio-keys";
 
-		boot_button: button_0 {
+		boot_button_sample: button_0 {
 			gpios = <&gpioh 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
 			label = "BOOT button";
 			zephyr,code = <INPUT_KEY_0>;
@@ -14,6 +14,6 @@
 	};
 
 	aliases {
-		sw0 = &boot_button;
+		sw0 = &boot_button_sample;
 	};
 };
