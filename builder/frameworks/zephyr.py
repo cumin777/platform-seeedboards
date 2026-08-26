@@ -29,7 +29,10 @@ from SCons.Script import Import, SConscript
 try:
     import yaml
 except ImportError:
-    subprocess.run(["pip", "install", "pyyaml"], check=True)
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "pyyaml"],
+        check=True,
+    )
     import yaml
 
 Import("env")
