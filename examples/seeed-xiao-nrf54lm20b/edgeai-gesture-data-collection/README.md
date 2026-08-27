@@ -128,3 +128,43 @@ ok: stopped
 For model training, split recordings by capture batch or operator. Do not
 randomly split overlapping windows from one continuous recording into the
 training, validation, and test sets.
+
+## Automated collection with the PC script
+
+The `tools/gesture_collect.py` script automates the USB CDC interaction and
+saves clean, numbered CSV files. It automatically finds a connected XIAO
+nRF54LM20B by VID:PID `2886:8013`. Install the only host dependency first:
+
+```powershell
+python -m pip install pyserial
+```
+
+From the repository root, collect 100 three-second recordings for one class:
+
+```powershell
+python examples/seeed-xiao-nrf54lm20b/edgeai-gesture-data-collection/tools/gesture_collect.py `
+  --label swipe_left `
+  --count 100 `
+  --duration 3 `
+  --output gesture_dataset
+```
+
+The script creates files such as:
+
+```text
+gesture_dataset/swipe_left/swipe_left_001.csv
+gesture_dataset/swipe_left/swipe_left_002.csv
+```
+
+Each recording includes a two-second preparation countdown. Use `--prepare 0`
+to disable it. If automatic detection is not available, select the CDC port
+manually:
+
+```powershell
+python examples/seeed-xiao-nrf54lm20b/edgeai-gesture-data-collection/tools/gesture_collect.py `
+  --port COM12 --label shake --count 20
+```
+
+Keep the board still during the countdown, perform exactly one gesture during
+each recording, and wait until the script reports `Saved` before moving to the
+next sample.
