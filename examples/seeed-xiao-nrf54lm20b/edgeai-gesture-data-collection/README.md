@@ -168,3 +168,24 @@ python examples/seeed-xiao-nrf54lm20b/edgeai-gesture-data-collection/tools/gestu
 Keep the board still during the countdown, perform exactly one gesture during
 each recording, and wait until the script reports `Saved` before moving to the
 next sample.
+
+## Train a model with Nordic Edge AI Lab
+
+Use the official Nordic Edge AI Lab to upload the collected CSV files, train a
+gesture classification model, evaluate it, and export a model for deployment:
+
+- [Nordic Edge AI Lab](https://ai.lab.nordicsemi.com)
+- [Edge AI Lab documentation](https://docs.nordicsemi.com/bundle/edge-ai-lab)
+- [Preparing data for gesture recognition](https://docs.nordicsemi.com/r/bundle/edge-ai-lab/page/get_started.html/preparing-data-for-gesture-recognition?contentId=mI0oi_sFCmGnPTyqdX8TRQ)
+- [Compile a model for the Axon NPU](https://docs.nordicsemi.com/r/bundle/edge-ai-lab/page/compile_model.html/compile-for-axon-npu)
+
+For this sample, configure the data upload with the six sensor columns in
+this order:
+
+```text
+accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
+```
+
+Use `label` as the target column and set the sampling rate to `100 Hz`. Start
+with a one-second window (approximately 100 samples), then adjust the window
+and shift according to the generated model requirements.
