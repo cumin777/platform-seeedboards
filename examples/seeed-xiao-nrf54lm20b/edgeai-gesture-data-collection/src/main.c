@@ -26,12 +26,14 @@
 #define SAMPLE_RATE_HZ 100
 #define LABEL_MAX_LEN 31
 #define COMMAND_MAX_LEN 64
+#define COMMAND_RX_QUEUE_SIZE 128
 
 static const struct device *const console_uart = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 static struct k_sem sample_ready;
 static struct k_mutex output_lock;
 static volatile bool recording;
 static char selected_label[LABEL_MAX_LEN + 1];
+K_MSGQ_DEFINE(command_rx_msgq, sizeof(uint8_t), COMMAND_RX_QUEUE_SIZE, 1);
 
 static void imu_ready(void)
 {
@@ -90,6 +92,27 @@ static void handle_command(char *command)
 	}
 }
 
+/* CDC ACM RX is interrupt driven.  Polling uart_poll_in() is unreliable on
+ * some USB host/firmware combinations because data arrives asynchronously
+ * from the USB device controller.  Keep the ISR short and parse commands in
+ * the thread below. */
+static void console_uart_callback(const struct device *dev, void *user_data)
+{
+	uint8_t bytes[16];
+	int count;
+
+	ARG_UNUSED(user_data);
+	while (uart_irq_update(dev) && uart_irq_is_pending(dev)) {
+		if (!uart_irq_rx_ready(dev)) {
+			continue;
+		}
+		count = uart_fifo_read(dev, bytes, sizeof(bytes));
+		for (int i = 0; i < count; ++i) {
+			(void)k_msgq_put(&command_rx_msgq, &bytes[i], K_NO_WAIT);
+		}
+	}
+}
+
 static void command_thread(void *a, void *b, void *c)
 {
 	char line[COMMAND_MAX_LEN];
@@ -98,16 +121,18 @@ static void command_thread(void *a, void *b, void *c)
 	ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
 
 	for (;;) {
-		while (device_is_ready(console_uart) && uart_poll_in(console_uart, &byte) == 0) {
-			if (byte == '\r' || byte == '\n') {
+		if (k_msgq_get(&command_rx_msgq, &byte, K_MSEC(100)) != 0) {
+			continue;
+		}
+		if (byte == '\r' || byte == '\n') {
+			if (length > 0) {
 				line[length] = '\0';
 				handle_command(line);
 				length = 0;
-			} else if (length < sizeof(line) - 1 && byte >= 0x20 && byte <= 0x7e) {
-				line[length++] = (char)byte;
 			}
+		} else if (length < sizeof(line) - 1 && byte >= 0x20 && byte <= 0x7e) {
+			line[length++] = (char)byte;
 		}
-		k_sleep(K_MSEC(5));
 	}
 }
 K_THREAD_DEFINE(command_tid, 1024, command_thread, NULL, NULL, NULL, 5, 0, 0);
@@ -128,6 +153,11 @@ int main(void)
 	if (!device_is_ready(console_uart)) {
 		return -ENODEV;
 	}
+	if (uart_irq_callback_user_data_set(console_uart, console_uart_callback, NULL) != 0) {
+		printk("error: USB CDC RX callback setup failed\r\n");
+		return -EIO;
+	}
+	uart_irq_rx_enable(console_uart);
 	if (imu_init(&config, imu_ready) != STATUS_SUCCESS) {
 		printk("error: IMU initialization failed\r\n");
 		return -EIO;

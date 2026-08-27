@@ -64,20 +64,33 @@ def read_line(port: serial.Serial, timeout: float) -> str | None:
     return None
 
 
-def wait_for_response(port: serial.Serial, expected: str, timeout: float = 2.0) -> None:
+def wait_for_response(
+    port: serial.Serial,
+    expected: str,
+    command: str,
+    timeout: float = 2.0,
+) -> None:
     """Wait for a firmware response while ignoring startup and CSV lines."""
     deadline = time.monotonic() + timeout
+    received: list[str] = []
     while time.monotonic() < deadline:
         line = read_line(port, min(0.2, max(0.0, deadline - time.monotonic())))
-        if line and expected in line:
-            return
-    raise RuntimeError(f"Timed out waiting for board response: {expected}")
+        if line:
+            received.append(line)
+            if expected in line:
+                return
+    details = "; ".join(received[-5:]) if received else "<no data>"
+    raise RuntimeError(
+        f"Timed out after {timeout:.1f}s waiting for response to '{command}': "
+        f"'{expected}'. Last received: {details}"
+    )
 
 
 def send_command(port: serial.Serial, command: str, expected: str) -> None:
+    print(f"   Sending '{command}', waiting for '{expected}'", flush=True)
     port.write((command + "\r\n").encode("ascii"))
     port.flush()
-    wait_for_response(port, expected)
+    wait_for_response(port, expected, command)
 
 
 def collect_recording(
@@ -111,6 +124,11 @@ def collect_recording(
                 stream.flush()
 
     send_command(port, "stop", "ok: stopped")
+    if rows == 0:
+        raise RuntimeError(
+            f"Board acknowledged recording, but no samples were received for "
+            f"{duration_seconds:.1f}s. Check the IMU and firmware log."
+        )
     return rows
 
 
