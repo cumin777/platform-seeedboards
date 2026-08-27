@@ -205,6 +205,36 @@ gesture_dataset.zip
 Avoid nesting the CSV under the local `gesture_dataset/swipe_left/` directory.
 If you use a ZIP, verify that it contains only the prepared dataset file.
 
+The `tools/prepare_dataset.py` helper performs this preparation automatically.
+It selects label directories, merges their recordings, converts the collector
+column names to the Nordic gesture schema, adds numeric class IDs and a
+`session_id` for each recording, and creates a ZIP with `dataset.csv` at its
+root.
+
+For example, to prepare only a small two-class smoke-test dataset:
+
+```powershell
+python tools/prepare_dataset.py `
+  --input tools/gesture_dataset `
+  --labels idle swipe_left `
+  --max-files-per-label 5 `
+  --output tools/gesture_dataset_upload.zip `
+  --keep-csv
+```
+
+The command creates:
+
+```text
+tools/gesture_dataset_upload.csv
+tools/gesture_dataset_upload.zip
+└── dataset.csv
+```
+
+Without `--labels`, all label directories are included. Without
+`--max-files-per-label`, every recording is included. The default class IDs
+are assigned alphabetically; use `--class-map idle=0 swipe_left=1` when a
+specific mapping is required.
+
 For the generic Lab upload, the target column can be selected in the dataset
 options. For the official Nordic gesture-recognition workflow, follow its
 canonical schema when requested: `acc_x`, `acc_y`, `acc_z`, `gyro_x`,
