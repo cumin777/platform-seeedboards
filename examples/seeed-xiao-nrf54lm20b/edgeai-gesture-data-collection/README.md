@@ -189,3 +189,26 @@ accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
 Use `label` as the target column and set the sampling rate to `100 Hz`. Start
 with a one-second window (approximately 100 samples), then adjust the window
 and shift according to the generated model requirements.
+
+The Lab accepts one `.csv` or one `.zip` file for a dataset. Do not upload the
+individual recording files one by one and expect them to be combined into one
+training dataset. The official documentation says to combine distributed CSV
+files before uploading because one model uses one dataset.
+
+The safest ZIP layout is a single final CSV at the archive root:
+
+```text
+gesture_dataset.zip
+└── dataset.csv
+```
+
+Avoid nesting the CSV under the local `gesture_dataset/swipe_left/` directory.
+If you use a ZIP, verify that it contains only the prepared dataset file.
+
+For the generic Lab upload, the target column can be selected in the dataset
+options. For the official Nordic gesture-recognition workflow, follow its
+canonical schema when requested: `acc_x`, `acc_y`, `acc_z`, `gyro_x`,
+`gyro_y`, `gyro_z`, plus a numeric `class` column whose class IDs start at
+`0`. The current collector keeps human-readable `accel_*` names and string
+`label` values to match this repository's firmware; rename/map them during
+dataset preparation if the Lab validation requires the canonical schema.
