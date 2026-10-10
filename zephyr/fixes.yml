@@ -82,6 +82,25 @@ boards:
           nrfx_grtc_uninit() in sys_clock_disable(), so the GRTC domain
           is left in a clean state for the next boot image.
 
+      - id: grtc-seed-cc-value
+        type: patch
+        path: 0004-nrf-grtc-seed-cc-value-from-startup-counter.patch
+        target: drivers/timer/nrf_grtc_timer.c
+        applies_to: ["4.4.0"]
+        reason: >
+          Local fix, no upstream counterpart (upstream main is still
+          affected). The SYSCOUNTER is not cleared at startup
+          (zephyr#89147), so after a warm reset it keeps the value
+          accumulated by previous images. Upstream PR#91432 (in 4.4.0)
+          initializes last_count from the counter but leaves the static
+          cc_value at 0; the tickless fast path (cc_value += cyc) assumes
+          cc_value is seeded from the startup counter base. With the two
+          bases torn apart, sys_clock_set_timeout() arms the compare ~2^32
+          cycles out and the system clock never fires — the image comes up
+          dead after every warm reset (verified via JLink: cc_value ends up
+          2^32-32 cycles past last_count, CC6 armed far future, CPU stuck
+          in idle). Seed cc_value from last_count at init.
+
   xiao_stm32c5:
     fixes:
       - id: adc-pcsel

@@ -1,0 +1,20 @@
+diff --git a/drivers/timer/nrf_grtc_timer.c b/drivers/timer/nrf_grtc_timer.c
+--- a/drivers/timer/nrf_grtc_timer.c
++++ b/drivers/timer/nrf_grtc_timer.c
+@@ -581,6 +581,16 @@
+ 	last_count = (counter() / CYC_PER_TICK) * CYC_PER_TICK;
+ 	grtc_start_value = last_count;
+ 	expired_cc = UINT64_MAX;
++	/* The SYSCOUNTER is not cleared at startup (zephyr#89147): after a warm
++	 * reset it keeps the value accumulated by the previous images, while the
++	 * static cc_value still starts at 0. The tickless fast path does
++	 * cc_value += cyc assuming cc_value is seeded from the startup counter
++	 * base; with the two bases torn apart, set_timeout arms the compare
++	 * ~2^32 cycles out and the system clock never fires (image comes up
++	 * dead after every warm reset). Seed cc_value from last_count to keep
++	 * both bases identical.
++	 */
++	cc_value = last_count;
+ 	nrfx_grtc_channel_callback_set(system_clock_channel_data.channel,
+ 				       sys_clock_timeout_handler, NULL);
+ 
