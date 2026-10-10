@@ -1,0 +1,28 @@
+diff --git a/drivers/timer/nrf_grtc_timer.c b/drivers/timer/nrf_grtc_timer.c
+--- a/drivers/timer/nrf_grtc_timer.c
++++ b/drivers/timer/nrf_grtc_timer.c
+@@ -16,6 +16,7 @@
+ #include <nrfx_grtc.h>
+ #include <zephyr/sys/math_extras.h>
+ #include <nrf_sys_event.h>
++#include <errno.h>
+ 
+ #define GRTC_NODE DT_NODELABEL(grtc)
+ #define HFCLK_NODE DT_PHANDLE_BY_NAME(GRTC_NODE, clocks, hfclock)
+@@ -555,6 +556,16 @@
+ 
+ #if defined(CONFIG_NRF_GRTC_START_SYSCOUNTER)
+ 	err_code = nrfx_grtc_syscounter_start(true, &system_clock_channel_data.channel);
++	if (err_code == -EALREADY) {
++		/* A warm reset (NVIC_SystemReset) preserves the GRTC domain, so a
++		 * SYSCOUNTER still running from the previous image makes start()
++		 * return before the system clock channel is allocated. Allocate it
++		 * and keep going: bailing out would leave the kernel without a
++		 * system clock, so every k_sleep() would latch forever and the
++		 * image would come up dead (no LED, no USB CDC).
++		 */
++		err_code = nrfx_grtc_channel_alloc(&system_clock_channel_data.channel);
++	}
+ 	if (err_code < 0) {
+ 		return err_code;
+ 	}

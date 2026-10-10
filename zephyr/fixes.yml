@@ -36,6 +36,52 @@
 # =============================================================================
 
 boards:
+  xiao_nrf54lm20b:
+    fixes:
+      - id: grtc-arm-first-compare
+        type: patch
+        path: 0001-nrf-grtc-arm-first-compare-in-tickless-init.patch
+        target: drivers/timer/nrf_grtc_timer.c
+        applies_to: ["4.4.0"]
+        upstream: "https://github.com/zephyrproject-rtos/zephyr/commit/1afedec05eafdc59fcd97802510602952fc9b44c"
+        reason: >
+          Backport of upstream 1afedec05eaf. In tickless mode the GRTC
+          driver skips arming the first CC compare at init and relies on
+          the kernel calling sys_clock_set_timeout(); the kernel only does
+          that when a new timeout becomes the soon-list head, so with an
+          empty soon side announce never starts and every k_sleep()
+          latches forever. After any warm reset the app image comes up
+          dead (no LED, no USB CDC) unless reset via pin/power. Not in
+          any Zephyr release yet (main only, 4.4.0 is the latest).
+
+      - id: grtc-warm-reset-syscounter-ealready
+        type: patch
+        path: 0002-nrf-grtc-tolerate-running-syscounter-after-warm-reset.patch
+        target: drivers/timer/nrf_grtc_timer.c
+        applies_to: ["4.4.0"]
+        reason: >
+          Local fix, no upstream counterpart. A warm reset
+          (NVIC_SystemReset, e.g. the SMP reset after `pio run -t
+          upload`) preserves the GRTC domain, so a SYSCOUNTER still
+          running from the previous image makes
+          nrfx_grtc_syscounter_start() return -EALREADY before the
+          system clock channel is allocated; sys_clock_driver_init()
+          then aborts, INTEN is never set and the system clock never
+          ticks. Allocate the channel and continue instead. nrfx master
+          behaves identically, so an nrfx upgrade does not replace this.
+
+      - id: grtc-release-lfclk-before-uninit
+        type: patch
+        path: 0003-nrf-grtc-release-lfclk-before-grtc-uninit.patch
+        target: drivers/timer/nrf_grtc_timer.c
+        applies_to: ["4.4.0"]
+        upstream: "https://github.com/zephyrproject-rtos/zephyr/commit/aad2c65d69e2341c3a3733e5647e8958c8b6f6c8"
+        reason: >
+          Backport of upstream aad2c65d69e (adapted: 4.4.0 has no
+          CONFIG_CLOCK_CONTROL_NRF_COMMON branch). Release LFCLK before
+          nrfx_grtc_uninit() in sys_clock_disable(), so the GRTC domain
+          is left in a clean state for the next boot image.
+
   xiao_stm32c5:
     fixes:
       - id: adc-pcsel
