@@ -1,0 +1,20 @@
+diff --git a/drivers/timer/nrf_grtc_timer.c b/drivers/timer/nrf_grtc_timer.c
+--- a/drivers/timer/nrf_grtc_timer.c
++++ b/drivers/timer/nrf_grtc_timer.c
+@@ -163,6 +163,16 @@
+ 	uint32_t dticks;
+ 
+ 	sys_event_unregister(false);
++	/* The nrfx layer reports cc_val from its internal channel table for
++	 * CCADD-based (relative) arming, and that table accumulates from zero
++	 * regardless of the hardware counter base. After a warm reset the
++	 * SYSCOUNTER carries the value accumulated by the previous images
++	 * (zephyr#89147), so the table value is torn from this driver's
++	 * absolute base (last_count) and counter_sub() underflows, corrupting
++	 * sys_clock_announce(). Read the compare value from the hardware
++	 * register instead: it is always on the absolute counter base.
++	 */
++	(void)get_comparator(system_clock_channel_data.channel, &cc_val);
+ 	dticks = counter_sub(cc_val, last_count) / CYC_PER_TICK;
+ 	last_count += (dticks * CYC_PER_TICK);
+ 	expired_cc = cc_val;

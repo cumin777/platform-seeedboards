@@ -1,0 +1,33 @@
+diff --git a/drivers/timer/nrf_grtc_timer.c b/drivers/timer/nrf_grtc_timer.c
+--- a/drivers/timer/nrf_grtc_timer.c
++++ b/drivers/timer/nrf_grtc_timer.c
+@@ -627,6 +627,29 @@
+ 				   : CLOCK_CONTROL_NRF_LF_START_STABLE);
+ 
+ 	z_nrf_clock_control_lf_on(mode);
++
++#if defined(CONFIG_NRF_GRTC_START_SYSCOUNTER)
++	{
++		/* Re-anchor the time base once the LFCLK is stable.
++		 * sys_clock_driver_init runs at EARLY level, before the
++		 * LFCLK-fed high domain of the SYSCOUNTER has restarted
++		 * after a warm reset: counter() read there can report a
++		 * high word of 0 while the running counter later reports
++		 * the accumulated global value, tearing the driver's time
++		 * base apart so the tick is armed into the far future and
++		 * never fires. Re-read the counter and re-arm here, after
++		 * the LFCLK is up. On a cold boot the re-read is a no-op.
++		 */
++		unsigned int lock_key = irq_lock();
++
++		last_count = (counter() / CYC_PER_TICK) * CYC_PER_TICK;
++		grtc_start_value = last_count;
++		expired_cc = UINT64_MAX;
++		cc_value = last_count;
++		system_timeout_set_abs(last_count + CYC_PER_TICK);
++		irq_unlock(lock_key);
++	}
++#endif
+ #endif
+ 
+ #if defined(CONFIG_NRF_GRTC_ALWAYS_ON)

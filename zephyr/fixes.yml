@@ -52,7 +52,14 @@ boards:
           empty soon side announce never starts and every k_sleep()
           latches forever. After any warm reset the app image comes up
           dead (no LED, no USB CDC) unless reset via pin/power. Not in
-          any Zephyr release yet (main only, 4.4.0 is the latest).
+          any Zephyr release yet (main only, 4.4.0 is the latest). The
+          arm is absolute (not CCADD-relative): a warm reset leaves the
+          CC register holding the previous image's compare value while
+          this image's SYSCOUNTER restarts from zero, so a relative arm
+          adds to a stale base that may already lie in the past (JLink:
+          CC6 armed 32 cycles behind last_count) and the compare never
+          fires. An absolute value derived from last_count overwrites
+          the stale register content.
 
       - id: grtc-warm-reset-syscounter-ealready
         type: patch
@@ -100,6 +107,43 @@ boards:
           dead after every warm reset (verified via JLink: cc_value ends up
           2^32-32 cycles past last_count, CC6 armed far future, CPU stuck
           in idle). Seed cc_value from last_count at init.
+
+      - id: grtc-hw-cc-in-handler
+        type: patch
+        path: 0005-nrf-grtc-read-hw-cc-in-timeout-handler.patch
+        target: drivers/timer/nrf_grtc_timer.c
+        applies_to: ["4.4.0"]
+        reason: >
+          Local fix, no upstream counterpart (upstream main is still
+          affected). Second base-tearing layer found via JLink after
+          0004: for CCADD-based (relative) arming the nrfx layer reports
+          the compare value from its internal channel table, which
+          accumulates from zero regardless of the hardware counter
+          base. After a warm reset the SYSCOUNTER carries the value
+          accumulated by previous images (zephyr#89147), so that table
+          value is torn from this driver's absolute base (last_count)
+          and counter_sub() underflows in the timeout handler,
+          corrupting sys_clock_announce(). Read the compare value from
+          the hardware CC register in the handler instead — it is
+          always on the absolute counter base.
+
+
+      - id: grtc-reanchor-timebase
+        type: patch
+        path: 0006-nrf-grtc-reanchor-timebase-after-lfclk.patch
+        target: drivers/timer/nrf_grtc_timer.c
+        applies_to: ["4.4.0"]
+        reason: >
+          Local fix, no upstream counterpart. Fourth layer found via
+          JLink: sys_clock_driver_init runs at EARLY level, before the
+          LFCLK-fed high domain of the SYSCOUNTER has restarted after a
+          warm reset — counter() read there reports a high word of 0
+          while the running counter later reports the accumulated
+          global value, so the base anchored at init and the live
+          counter tear apart and the tick arms into the far future.
+          Re-anchor last_count/cc_value and re-arm the first compare in
+          grtc_post_init(), which runs after the LFCLK is stable. On a
+          cold boot the re-read is a no-op.
 
   xiao_stm32c5:
     fixes:
