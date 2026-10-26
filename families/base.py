@@ -36,7 +36,7 @@ Upstream loading (families that declare ``upstream_platform``):
 """
 
 import sys
-from os.path import isdir, isfile, join
+from os.path import abspath, dirname, isdir, isfile, join
 
 
 class UpstreamPlatformProxy:
@@ -193,6 +193,15 @@ class ChipFamily:
         """PlatformIO platform name the Zephyr build should present
         (PIOPLATFORM override), or None to keep this platform's name."""
         return None
+
+    def host_dir(self):
+        """This platform repo's root, derived from this file's location.
+
+        Use instead of env.PioPlatform().get_dir() in SCons-time code:
+        families that load an upstream builder run with PioPlatform
+        wrapped (get_dir() = the upstream package), and any host path
+        built from it would silently target the upstream copy."""
+        return dirname(dirname(abspath(__file__)))
 
     # ------------------------------------------------------------------
     # Upstream platform loading (families that declare upstream_platform)

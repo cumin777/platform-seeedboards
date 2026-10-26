@@ -41,18 +41,19 @@ Import("env")
 platform_name = env.subst("$PIOPLATFORM")
 board_name = env.get("BOARD", "")
 platform = env.PioPlatform()
-platform_dir = platform.get_dir()
 framework_version = None
 
-# Family-driven PIOPLATFORM override (replaces board-name substring
-# checks): Zephyr's build expects the vendor platform name; ours is
-# restored after the framework script below runs.
-if platform_dir not in sys.path:
-    # tail-append only: the repo root must never shadow stdlib `platform`
-    sys.path.append(platform_dir)
+# The dispatchers (builder/main.py router, frameworks/arduino.py) keep
+# this repo's root on sys.path, so the families registry import works
+# here even while PioPlatform is wrapped (get_dir() = the upstream
+# package for upstream-backed families). SCons deletes __file__ in
+# SConscript frames, so host paths come from family.host_dir(), never
+# from __file__ or get_dir().
 from families import resolve_board_family
 
 _family = resolve_board_family(env.BoardConfig(), board_name)
+platform_dir = _family.host_dir()
+
 _zephyr_platform_override = _family.zephyr_pioplatform()
 if _zephyr_platform_override:
     env.Replace(

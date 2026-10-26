@@ -22,7 +22,6 @@ platform-package script (SConscript-dynamically loaded, no local copy) or
 a local board_build/<family>/ script — and which hooks apply afterwards.
 """
 
-import sys
 
 from SCons.Script import DefaultEnvironment
 
@@ -31,9 +30,12 @@ env = DefaultEnvironment()
 platform = env.PioPlatform()
 board = env.BoardConfig()
 
-if platform.get_dir() not in sys.path:
-    # tail-append only: the repo root must never shadow stdlib `platform`
-    sys.path.append(platform.get_dir())
+# The board-level dispatch router (builder/main.py) keeps this repo's
+# root on sys.path for the whole SCons run, so the families registry
+# import works here even while PioPlatform is wrapped for an
+# upstream-backed family (get_dir() = the upstream package). SCons
+# deletes __file__ in SConscript frames, so host paths below come from
+# family.host_dir() only.
 from families import resolve_board_family
 
 family = resolve_board_family(board, board.id)

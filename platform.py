@@ -59,7 +59,23 @@ class SeeedstudioPlatform(PlatformBase):
         if family.post_configure_packages(self, variables, targets):
             result = super().configure_default_packages(variables, targets)
 
+        self._absolutize_framework_scripts()
         return result
+
+    def _absolutize_framework_scripts(self):
+        """Rewrite relative framework script paths against THIS repo.
+
+        Families that load an upstream builder keep env.PioPlatform()
+        wrapped for the duration of their build script (get_dir() points
+        at the upstream package), and PIO core resolves a framework's
+        relative script against get_dir() — without this rewrite the
+        dispatch would load the upstream's framework shims instead of
+        our builder/frameworks/*.py.
+        """
+        for fw_opts in (self.frameworks or {}).values():
+            script = fw_opts.get("script")
+            if script and not os.path.isabs(script):
+                fw_opts["script"] = os.path.join(self.get_dir(), script)
 
     def get_zephyr_board_name(self, board_name):
         """Return the Zephyr board.name (e.g. 'xiao_stm32c5') for a PIO board id.
