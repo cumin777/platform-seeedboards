@@ -43,11 +43,27 @@ from SCons.Script import Import
 Import("env")
 
 from families import resolve_board_family  # noqa: E402  (sys.path: host platform dir)
+from families.nordic import upload  # noqa: E402
 
 
 board = env.BoardConfig()
 family = resolve_board_family(board, env.get("BOARD", ""))
+platform = env.PioPlatform()  # the UpstreamPlatformProxy while in here
+
+# Our upload protocols ride the upstream "custom" passthrough branch:
+# upload.py pre-configures the command, the upstream dispatch never
+# inspects what it does not know, and afterwards the real artifact
+# (signed image / raw binary) is grafted onto the build for the
+# protocols whose flash target is not the upstream hex default.
+upload_protocol = env.subst("$UPLOAD_PROTOCOL")
+take_over = upload.handles(upload_protocol, board, env)
+
+if take_over:
+    upload.configure(env, platform, board, upload_protocol)
+    env.Replace(UPLOAD_PROTOCOL="custom")
 
 upstream_main = join(family._upstream_platform_dir(), "builder", "main.py")
-
 env.SConscript(upstream_main, exports="env")
+
+if take_over:
+    upload.graft_artifacts(env, board, upload_protocol)
