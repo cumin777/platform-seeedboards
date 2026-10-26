@@ -47,20 +47,30 @@ class NordicFamily(ChipFamily):
         nrf_cfg.configure_nrf_debug_session(debug_config)
 
     def build_script(self, platform, board):
-        # host_dir(), not platform.get_dir(): this resolves inside the
+        # host_dir(), not platform.get_dir(): resolving inside the
         # wrapped window would point at the upstream package.
         return join(self.host_dir(), "families", "nordic", "build.py")
 
     def framework_script(self, platform, framework, board):
-        # mbed-BSP boards never reach the wrapper: configure_default_packages
-        # repoints frameworks["arduino"]["script"] at arduino-core-mbed.py.
-        # Adafruit-BSP boards load the local nrf_arduino.py; nRF54 boards
-        # are zephyr-only and declare no build.bsp.name.
+        # mbed-BSP boards never reach the dispatcher hook path:
+        # configure_default_packages repoints frameworks["arduino"]
+        # ["script"] at the family-owned arduino-core-mbed.py (an older
+        # upstream fork with two local fixes; upstreaming deferred).
+        # Adafruit-BSP boards load the upstream adafruit.py plus the
+        # hooks below; nRF54 boards are zephyr-only, no build.bsp.name.
         if framework != "arduino":
             return None
         if board.get("build.bsp.name", "") != "adafruit":
             return None
-        return join(self.host_dir(), "builder", "board_build", "nrf", "nrf_arduino.py")
+        return join(self._upstream_platform_dir(),
+                    "builder", "frameworks", "arduino", "adafruit.py")
+
+    def get_build_hooks(self, framework):
+        if framework != "arduino":
+            return []
+        from families.nordic import arduino_hooks
+        return [arduino_hooks.bsp_libraries_on_libpath,
+                arduino_hooks.keep_local_wrap_set]
 
     def zephyr_pioplatform(self):
         return "nordicnrf52"

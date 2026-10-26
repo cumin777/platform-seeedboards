@@ -37,8 +37,10 @@ def configure_nrf_default_packages(self, variables, targets):
                     self.frameworks["arduino"]["package"] = "framework-arduino-mbed"
                     # needed to build the ZIP file
                     self.packages["tool-adafruit-nrfutil"]["optional"] = False
+                    # family-owned fork of the upstream mbed-core script
+                    # (families/nordic/ documents why it is not upstream yet)
                     self.frameworks["arduino"][
-                        "script"] = "builder/board_build/nrf/arduino-core-mbed.py"
+                        "script"] = "families/nordic/arduino-core-mbed.py"
 
         if "zephyr" in frameworks:
             for p in self.packages:
