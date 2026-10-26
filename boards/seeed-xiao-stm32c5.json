@@ -11,8 +11,7 @@
         ],
         "mcu": "stm32c5a3cg",
         "zephyr": {
-            "variant": "xiao_stm32c5",
-            "package": "framework-zephyr-nrf54lm20"
+            "variant": "xiao_stm32c5"
         }
     },
     "debug": {

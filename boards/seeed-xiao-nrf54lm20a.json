@@ -5,8 +5,7 @@
       "f_cpu": "128000000L",
       "mcu": "nrf54lm20a",
       "zephyr": {
-        "variant": "xiao_nrf54lm20a/nrf54lm20a/cpuapp",
-        "package": "framework-zephyr-nrf54lm20"
+        "variant": "xiao_nrf54lm20a/nrf54lm20a/cpuapp"
      }
     },
     "connectivity": [
