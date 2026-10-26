@@ -37,9 +37,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # build.chip_family manifest field — no board-id substring matching here.
 from families import resolve_board_family  # noqa: E402
 
-# Per-board Zephyr framework package name and Zephyr board.name live in each
-# board's manifest (build.zephyr.package / build.zephyr.variant). Builders read
-# build.zephyr.package directly; see get_zephyr_board_name below and
+# The Zephyr framework builds against the single pinned framework-zephyr
+# package from platform.json; the Zephyr board.name lives in each board's
+# manifest (build.zephyr.variant). See get_zephyr_board_name below and
 # zephyr/README.md.
 
 
@@ -50,7 +50,6 @@ class SeeedstudioPlatform(PlatformBase):
             return super().configure_default_packages(variables, targets)
 
         board_name = variables.get("board")
-        self._configure_zephyr_package_for_board(board_name, variables)
 
         family = resolve_board_family(self.board_config(board_name), board_name)
         family.configure_default_packages(self, variables, targets)
@@ -61,22 +60,6 @@ class SeeedstudioPlatform(PlatformBase):
             result = super().configure_default_packages(variables, targets)
 
         return result
-
-    def _configure_zephyr_package_for_board(self, board_name, variables):
-        frameworks = variables.get("pioframework", [])
-        if "zephyr" not in frameworks or "zephyr" not in self.frameworks:
-            return
-
-        package_name = self.board_config(board_name).get("build.zephyr.package", "")
-        if not package_name:
-            sys.stderr.write(
-                "Error: board '%s' uses the zephyr framework but boards/%s.json "
-                "has no build.zephyr.package. Add it (e.g. "
-                "\"framework-zephyr-nrf54lm20\") — see zephyr/README.md.\n"
-                % (board_name, board_name))
-            sys.exit(1)
-
-        self.frameworks["zephyr"]["package"] = package_name
 
     def get_zephyr_board_name(self, board_name):
         """Return the Zephyr board.name (e.g. 'xiao_stm32c5') for a PIO board id.

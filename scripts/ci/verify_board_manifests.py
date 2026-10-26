@@ -5,7 +5,7 @@ Mirrors the runtime gates that select packages/tools per board, so a
 forgotten manifest field fails here at PR time instead of surfacing as a
 silent misconfiguration or an obscure build/upload error downstream:
 
-  R1  zephyr in frameworks  -> build.zephyr.{package,variant} required
+  R1  zephyr in frameworks  -> build.zephyr.variant required
   R2  arduino in frameworks and build.mcu startswith "nrf52"
         -> build.bsp.name required, value in {adafruit, mbed}
   R3  upload.protocol == "nrfutil-mcumgr"
@@ -101,12 +101,7 @@ def _check_manifest(path: Path, valid_families: set[str] | None = None) -> tuple
 
     # R1: zephyr
     if "zephyr" in frameworks:
-        package = _get(data, "build.zephyr.package", "")
         variant = _get(data, "build.zephyr.variant", "")
-        if not package:
-            errors.append(
-                f"ERROR {rel} [zephyr-package]: 'zephyr' in frameworks requires "
-                f"build.zephyr.package (see zephyr/README.md)")
         if not variant:
             errors.append(
                 f"ERROR {rel} [zephyr-variant]: 'zephyr' in frameworks requires "
