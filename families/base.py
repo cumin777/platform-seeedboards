@@ -36,6 +36,29 @@ Upstream loading (families that declare ``upstream_platform``):
 """
 
 import sys
+from os.path import isdir, isfile, join
+
+
+class UpstreamPlatformProxy:
+    """Presents an upstream platform package as the PioPlatform object.
+
+    Upstream builders locate companion modules and assets via
+    env.PioPlatform().get_dir() — the HOST platform directory.
+    Handing them this proxy makes get_dir() resolve to the upstream
+    package so every such lookup lands inside the upstream copy, while
+    everything else (packages, install_tool, debug) forwards to the
+    real host platform.
+    """
+
+    def __init__(self, host, upstream_dir):
+        self._host = host
+        self._upstream_dir = upstream_dir
+
+    def get_dir(self):
+        return self._upstream_dir
+
+    def __getattr__(self, name):
+        return getattr(self._host, name)
 
 
 class FamilyResolutionError(ValueError):
@@ -170,6 +193,120 @@ class ChipFamily:
         """PlatformIO platform name the Zephyr build should present
         (PIOPLATFORM override), or None to keep this platform's name."""
         return None
+
+    # ------------------------------------------------------------------
+    # Upstream platform loading (families that declare upstream_platform)
+    # ------------------------------------------------------------------
+
+    def _upstream_platform_dir(self):
+        from platformio.project.config import ProjectConfig
+        platforms_dir = ProjectConfig.get_instance().get("platformio", "platforms_dir")
+        return join(platforms_dir, self.upstream_platform)
+
+    def _upstream_matches_lock(self):
+        """True when the installed upstream checkout is the locked commit.
+
+        Primary source is the .upstream-lock marker written after a
+        successful install: it survives directory copies (offline
+        distribution, CI cache extraction), unlike the .git checkout
+        which only exists for git-clone installs. Falls back to
+        rev-parse for pre-marker installs."""
+        upstream_dir = self._upstream_platform_dir()
+        locked_sha = self.upstream_version.rsplit("#", 1)[-1]
+        try:
+            with open(join(upstream_dir, ".upstream-lock"), encoding="utf-8") as fp:
+                return fp.read().strip().lower() == locked_sha.lower()
+        except OSError:
+            pass
+        if not isdir(join(upstream_dir, ".git")):
+            return False
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["git", "-C", upstream_dir, "rev-parse", "HEAD"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, check=True)
+        except (OSError, subprocess.CalledProcessError):
+            return False
+        return result.stdout.strip().lower().startswith(locked_sha[:7].lower())
+
+    def _ensure_upstream_platform(self, platform):
+        """Install the locked upstream platform via PlatformPackageManager.
+
+        Upstream platform repos ship a platform.json manifest (no
+        package.json), so the regular tool-package channel refuses them;
+        PlatformPackageManager accepts platform.json and installs into
+        the platforms dir. Dependencies are skipped — this platform owns
+        its package set, never the upstream one. The locked spec lives
+        in upstream_version (kept here, not in platform.json's packages:
+        it is a source reference, not a core-installable package). When
+        the lock moves, a stale install is uninstalled first so the
+        upgrade is maintainer-driven but automatic in effect.
+
+        Only call this when a build actually loads builder scripts from
+        the upstream platform, so a failed install is fatal in
+        configure (fail fast, with the spec and remedy in the message)
+        instead of surfacing as a missing builder deep inside SCons.
+        """
+        if not self.upstream_platform or not self.upstream_version:
+            return None
+        upstream_dir = self._upstream_platform_dir()
+        if self._upstream_matches_lock():
+            self._write_upstream_lock_marker()
+            return upstream_dir
+
+        def _fail(reason):
+            sys.stderr.write(
+                "Error: this build needs the upstream '%s' platform "
+                "package (locked spec: %s) and it is not installed: %s\n"
+                "Fix: retry online (auto-installed on first build), or "
+                "pre-seed <platforms_dir>/%s from a machine that has it.\n"
+                % (self.upstream_platform, self.upstream_version, reason,
+                   self.upstream_platform))
+            sys.exit(1)
+
+        try:
+            from platformio.package.manager.platform import PlatformPackageManager
+            pm = PlatformPackageManager()
+            if isdir(join(upstream_dir, ".git")):
+                # skip_dependencies: the upstream platform's uninstall
+                # would otherwise remove shared packages that this
+                # platform installed itself.
+                pm.uninstall(self.upstream_platform, skip_dependencies=True)
+            pm.install(self.upstream_version, skip_dependencies=True)
+        except Exception as e:
+            _fail("install failed: %s" % e)
+
+        if not self._upstream_matches_lock():
+            _fail("installed version does not match the lock")
+
+        self._write_upstream_lock_marker()
+        return upstream_dir
+
+    def _write_upstream_lock_marker(self):
+        """Persist the lock marker so copied/deployed checkouts (no
+        .git) are recognized without network access."""
+        try:
+            with open(join(self._upstream_platform_dir(), ".upstream-lock"),
+                      "w", encoding="utf-8") as fp:
+                fp.write(self.upstream_version.rsplit("#", 1)[-1])
+        except OSError as e:
+            print("Warning: could not write upstream lock marker: %s" % e)
+
+    def wrap_platform(self, platform, env):
+        """Hook for the dispatchers: replace env.PioPlatform() with an
+        UpstreamPlatformProxy for the duration of the upstream script
+        (see that class). Returns the original callable so the caller
+        can restore it afterwards; None without an upstream platform.
+        The proxy is only mounted when the upstream checkout actually
+        carries a platform.json (i.e. _ensure_upstream_platform ran)."""
+        if not self.upstream_platform:
+            return None
+        original = env.PioPlatform
+        upstream_dir = self._upstream_platform_dir()
+        if isfile(join(upstream_dir, "platform.json")):
+            env.PioPlatform = lambda: UpstreamPlatformProxy(original(), upstream_dir)
+        return original
 
     # ------------------------------------------------------------------
     # Shared guarded helpers
