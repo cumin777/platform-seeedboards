@@ -109,7 +109,7 @@ def test_platform_delegates_configure_default_packages_per_family():
 def test_platform_add_dynamic_options_uses_registry():
     platform = PlatformFactory.new(str(REPO))
     board = platform.get_boards("seeed-xiao-esp32-c3")
-    # esp_cfg injects esptool defaults through the family delegate
+    # the family class injects esptool defaults through the delegate
     assert "esptool" in board.get("upload.protocols", [])
 
 
