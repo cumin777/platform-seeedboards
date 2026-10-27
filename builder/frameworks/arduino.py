@@ -19,7 +19,7 @@ Arduino framework wrapper.
 Thin dispatcher: the board manifest's build.chip_family selects the chip
 family; the family decides which Arduino build script runs — an upstream
 platform-package script (SConscript-dynamically loaded, no local copy) or
-a local board_build/<family>/ script — and which hooks apply afterwards.
+a local builder/families/<family>/ script — and which hooks apply afterwards.
 """
 
 

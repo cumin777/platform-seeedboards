@@ -36,9 +36,9 @@ class SiliconlabFamily(ChipFamily):
         siliconlab_cfg.configure_siliconlab_debug_session(debug_config)
 
     def build_script(self, platform, board):
-        return join(platform.get_dir(), "builder", "board_build", "siliconlab", "siliconlab_build.py")
+        return join(platform.get_dir(), "builder", "families", "siliconlab", "siliconlab_build.py")
 
     def framework_script(self, platform, framework, board):
         if framework != "arduino":
             return None
-        return join(platform.get_dir(), "builder", "board_build", "siliconlab", "siliconlab_arduino.py")
+        return join(platform.get_dir(), "builder", "families", "siliconlab", "siliconlab_arduino.py")

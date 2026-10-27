@@ -29,7 +29,7 @@ from families import resolve_board_family
 
 # Zero-string routing: the board manifest's build.chip_family selects the
 # family; the family owns which board-level build script runs (a local
-# board_build/<family>/ script or an upstream-platform one).
+# builder/families/<family>/ script or an upstream-platform one).
 family = resolve_board_family(board, board.id)
 script = family.build_script(platform, board)
 if script:

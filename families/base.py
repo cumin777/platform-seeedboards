@@ -181,7 +181,7 @@ class ChipFamily:
 
     def build_script(self, platform, board):
         """Absolute path of the board-level build script
-        (builder/board_build/<family>/...), or None to skip."""
+        (builder/families/<family>/...), or None to skip."""
         return None
 
     def framework_script(self, platform, framework, board):

@@ -36,9 +36,9 @@ class RpiFamily(ChipFamily):
         rpi_cfg.configure_rpi_debug_session(debug_config)
 
     def build_script(self, platform, board):
-        return join(platform.get_dir(), "builder", "board_build", "rpi", "rpi_build.py")
+        return join(platform.get_dir(), "builder", "families", "rpi", "rpi_build.py")
 
     def framework_script(self, platform, framework, board):
         if framework != "arduino":
             return None
-        return join(platform.get_dir(), "builder", "board_build", "rpi", "rpi_arduino.py")
+        return join(platform.get_dir(), "builder", "families", "rpi", "rpi_arduino.py")

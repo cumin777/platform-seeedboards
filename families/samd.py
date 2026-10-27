@@ -36,9 +36,9 @@ class SamdFamily(ChipFamily):
         samd_cfg.configure_samd_debug_session(debug_config)
 
     def build_script(self, platform, board):
-        return join(platform.get_dir(), "builder", "board_build", "samd", "samd_build.py")
+        return join(platform.get_dir(), "builder", "families", "samd", "samd_build.py")
 
     def framework_script(self, platform, framework, board):
         if framework != "arduino":
             return None
-        return join(platform.get_dir(), "builder", "board_build", "samd", "samd_arduino.py")
+        return join(platform.get_dir(), "builder", "families", "samd", "samd_arduino.py")

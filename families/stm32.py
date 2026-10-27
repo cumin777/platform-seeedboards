@@ -39,7 +39,7 @@ class Stm32Family(ChipFamily):
         stm32_cfg.configure_stm32_debug_session(debug_config)
 
     def build_script(self, platform, board):
-        return join(platform.get_dir(), "builder", "board_build", "stm32", "stm32_build.py")
+        return join(platform.get_dir(), "builder", "families", "stm32", "stm32_build.py")
 
     def framework_script(self, platform, framework, board):
         return None  # no Arduino support

@@ -419,8 +419,8 @@ class Esp32Family(ChipFamily):
     def build_script(self, platform, board):
         """The board-level build script is the upstream pioarduino
         builder/main.py itself (env assembly, upload matrix, filesystem
-        images, diagnostics). The former local board_build/esp/
-        esp_build.py was an official-v6.9.0-era copy of the same file;
+        images, diagnostics). The former local esp build script
+        was an official-v6.9.0-era copy of the same file;
         this returns to the upstream mainline. Host-side expectations
         the upstream builder has of its platform object are adapted by
         wrap_platform (base) / setup_python_env below."""

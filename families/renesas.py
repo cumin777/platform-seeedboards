@@ -35,9 +35,9 @@ class RenesasFamily(ChipFamily):
         renesas_cfg.configure_renesas_debug_session(debug_config)
 
     def build_script(self, platform, board):
-        return join(platform.get_dir(), "builder", "board_build", "renesas", "renesas_build.py")
+        return join(platform.get_dir(), "builder", "families", "renesas", "renesas_build.py")
 
     def framework_script(self, platform, framework, board):
         if framework != "arduino":
             return None
-        return join(platform.get_dir(), "builder", "board_build", "renesas", "renesas_arduino.py")
+        return join(platform.get_dir(), "builder", "families", "renesas", "renesas_arduino.py")
