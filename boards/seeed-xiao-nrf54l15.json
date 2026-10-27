@@ -16,7 +16,7 @@
         "cmsis-dap"
       ],
       "jlink_device": "nRF54L15_M33",
-      "openocd_target": "$PROJECT_CORE_DIR/platforms/\"$PIOPLATFORM\"/families/nordic/nrf54l.cfg",
+      "openocd_target": "$PROJECT_CORE_DIR/platforms/\"$PIOPLATFORM\"/builder/families/nordic/nrf54l.cfg",
       "svd_path": "nrf54l15.svd"
     },
     "frameworks": [

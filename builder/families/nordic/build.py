@@ -36,6 +36,7 @@ Family-specific deltas are applied around the upstream execution:
 Neither the upstream file nor the framework package is modified.
 """
 
+import sys
 from os.path import join
 
 from SCons.Script import Import
@@ -43,11 +44,18 @@ from SCons.Script import Import
 Import("env")
 
 from families import resolve_board_family  # noqa: E402  (sys.path: host platform dir)
-from families.nordic import upload  # noqa: E402
 
 
 board = env.BoardConfig()
 family = resolve_board_family(board, env.get("BOARD", ""))
+
+# builder/ is not a package: sibling modules come into reach the same
+# way builder/frameworks/zephyr.py reaches zephyr_fixes — this family's
+# builder dir on sys.path (SCons deletes __file__ in SConscript frames,
+# so the host path comes from family.host_dir()).
+sys.path.insert(0, join(family.host_dir(), "builder", "families", "nordic"))
+import upload  # noqa: E402
+
 platform = env.PioPlatform()  # the UpstreamPlatformProxy while in here
 
 # Our upload protocols ride the upstream "custom" passthrough branch:

@@ -17,7 +17,7 @@
 The adafruit-BSP build script is the upstream platform-nordicnrf52
 builder/frameworks/arduino/adafruit.py; the two behavioral deltas of the
 retired local nrf_arduino.py are reapplied here as post-script hooks
-(families/nordic/__init__.py get_build_hooks):
+(families/nordic.py get_build_hooks):
 
 * BSP libraries ship prebuilt archives in nested directories without a
   flat libmap, so every library directory carrying sources or headers

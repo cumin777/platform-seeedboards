@@ -18,14 +18,19 @@ Owns the package matrix, the default debug-tools table and the debug
 session tweaks (inlined from the retired platform_cfg/nrf_cfg.py — the
 per-family product-decision layer now lives with its family), plus the
 upstream builder lock: the board-level skeleton is the official
-platform-nordicnrf52 builder/main.py, executed by build.py in this
-package with the upload deltas from upload.py around it.
+platform-nordicnrf52 builder/main.py, executed by builder/families/
+nordic/build.py with the upload deltas from upload.py around it.
+
+Layout (D3' execution domains): this module is the Core-process family
+class; everything the SCons process executes — the build wrapper, the
+upload layer, the arduino hooks and fork, mcumgrupload.py and the
+nRF54 OpenOCD configs — lives in builder/families/nordic/.
 """
 
 import sys
 from os.path import join
 
-from ..base import ChipFamily
+from .base import ChipFamily
 
 IS_WINDOWS = sys.platform.startswith("win")
 
@@ -84,10 +89,10 @@ class NordicFamily(ChipFamily):
                         # needed to build the ZIP file
                         platform.packages["tool-adafruit-nrfutil"]["optional"] = False
                         # family-owned fork of the upstream mbed-core
-                        # script (families/nordic/ documents why it is
-                        # not upstream yet)
+                        # script (builder/families/nordic/ documents
+                        # why it is not upstream yet)
                         platform.frameworks["arduino"][
-                            "script"] = "families/nordic/arduino-core-mbed.py"
+                            "script"] = "builder/families/nordic/arduino-core-mbed.py"
 
             if "zephyr" in frameworks:
                 for p in platform.packages:
@@ -216,7 +221,7 @@ class NordicFamily(ChipFamily):
     def build_script(self, platform, board):
         # host_dir(), not platform.get_dir(): resolving inside the
         # wrapped window would point at the upstream package.
-        return join(self.host_dir(), "families", "nordic", "build.py")
+        return join(self.host_dir(), "builder", "families", "nordic", "build.py")
 
     def framework_script(self, platform, framework, board):
         # mbed-BSP boards never reach the dispatcher hook path: their
@@ -234,7 +239,13 @@ class NordicFamily(ChipFamily):
     def get_build_hooks(self, framework):
         if framework != "arduino":
             return []
-        from families.nordic import arduino_hooks
+        # builder/ is not a package: the hooks module comes into reach
+        # the same way builder/frameworks/zephyr.py reaches zephyr_fixes
+        # — its directory on sys.path.
+        hooks_dir = join(self.host_dir(), "builder", "families", "nordic")
+        if hooks_dir not in sys.path:
+            sys.path.insert(0, hooks_dir)
+        import arduino_hooks
         return [arduino_hooks.bsp_libraries_on_libpath,
                 arduino_hooks.keep_local_wrap_set]
 

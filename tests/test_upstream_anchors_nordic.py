@@ -1,7 +1,7 @@
 """Upstream adapter anchor tests for the Nordic family.
 
-The nordic wrapper (families/nordic/build.py) and upload layer
-(families/nordic/upload.py) depend on shapes of the locked
+The nordic wrapper (builder/families/nordic/build.py) and upload layer
+(builder/families/nordic/upload.py) depend on shapes of the locked
 platform-nordicnrf52 checkout. Each anchor below pins one upstream
 fact the adapter relies on; a failing anchor after a lock bump means
 the upstream changed something an adapter assumes — re-audit the
@@ -75,5 +75,5 @@ def test_upstream_anchor(path, pattern, what):
     import re
     assert re.search(pattern, source), (
         "Upstream %s no longer matches %r (%s). Re-audit the nordic "
-        "adapters in families/nordic/ (see handover: takeover rules)."
+        "adapters in builder/families/nordic/ (see handover: takeover rules)."
         % (path, pattern, what))
