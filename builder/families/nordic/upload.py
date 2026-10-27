@@ -17,8 +17,9 @@ nrf_build.py; behavior is unchanged).
 
 The upstream builder skeleton dispatches upload protocols it knows
 (nrfutil, nrfjprog, mbed, sam-ba, jlink, blackmagic, OpenOCD-via-debug-
-tools, custom). build.py detects the protocols where our behavior
-differs, pre-configures the full uploader command here, rewrites
+tools, custom). Where our behavior differs, the PROTOCOLS registry at
+the bottom of this module takes the upload over: build.py resolves the
+protocol, pre-configures the full uploader command, rewrites
 UPLOAD_PROTOCOL to "custom" so the upstream dispatch degrades to a pure
 ``VerboseAction("$UPLOADCMD")`` passthrough, and — after the upstream
 script has registered its upload target — grafts our artifact chain
@@ -198,55 +199,67 @@ def _get_dfu_upload_offset(board_config):
     return "0x27000"
 
 
-# Protocols whose upload the upstream skeleton handles unchanged.
-_UPSTREAM_PROTOCOLS = ("mbed", "nrfjprog", "nrfutil", "blackmagic")
+class Protocol:
+    """One takeover upload protocol as registered in PROTOCOLS.
 
-
-def handles(upload_protocol, board, env):
-    """True when this module must drive the upload for this build.
-
-    Takeover rules (everything else rides the upstream dispatch):
-    1. our own protocols: nrfutil-mcumgr, pyocd, probe-rs;
-    2. OpenOCD-class protocols (any key of the board's debug.tools)
-       on nRF MCUs whose flash/RRAM write needs a special sequence;
-    3. sam-ba: our bossac fork carries --verify/--offset/native-USB
-       flags the generic upstream branch lacks;
-    4. jlink on bootloader (DFUBOOTHEX) builds: upload offset comes
-       from the board's linker script, not the upstream constants.
+    ``handles``   (protocol, board, env) -> bool — must a build using
+                  this protocol be taken over at all
+    ``configure`` (env, platform, board, protocol) — pre-set
+                  UPLOADER/UPLOADERFLAGS/UPLOADCMD
+    ``graft``     (env, board) — attach the real artifact chain after
+                  the upstream script registered its upload target
+                  (defaults to _graft_nothing)
     """
-    if not upload_protocol:
-        return False
-    if upload_protocol in ("nrfutil-mcumgr", "pyocd", "probe-rs"):
+
+    def __init__(self, handles, configure, graft=None):
+        self.handles = handles
+        self.configure = configure
+        self.graft = graft or _graft_nothing
+
+
+class Takeover:
+    """A registry entry bound to the concrete protocol name that
+    selected it (the openocd entry serves many names: stlink,
+    cmsis-dap, ...). This is the object build.py drives."""
+
+    def __init__(self, protocol, name):
+        self.protocol = protocol
+        self.name = name
+
+    def configure(self, env, platform, board):
+        """Pre-set UPLOADER/UPLOADERFLAGS/UPLOADCMD; the wrapper
+        rewrites UPLOAD_PROTOCOL to "custom" right after this call, so
+        the upstream dispatch never inspects these protocols itself."""
+        self.protocol.configure(env, platform, board, self.name)
+
+    def graft(self, env, board):
+        """Attach the real artifact chain after the upstream script
+        registered its upload target."""
+        self.protocol.graft(env, board)
+
+
+def _always(protocol, board, env):
+    return True
+
+
+def _handles_jlink(protocol, board, env):
+    # Takeover on bootloader (DFUBOOTHEX) builds — the upload offset
+    # comes from the board's linker script, not the upstream constants
+    # — or via the OpenOCD-class rule (the board's debug.tools carries
+    # a jlink entry on nRF MCUs).
+    if "DFUBOOTHEX" in env:
         return True
-    if upload_protocol == "sam-ba":
-        return True
-    if upload_protocol.startswith("jlink") and "DFUBOOTHEX" in env:
-        return True
-    if upload_protocol in board.get("debug", {}).get("tools", {}):
-        return board.get("build.mcu", "").startswith("nrf")
-    return False
+    return (protocol in board.get("debug", {}).get("tools", {})
+            and board.get("build.mcu", "").startswith("nrf"))
 
 
-def configure(env, platform, board, upload_protocol):
-    """Pre-configure UPLOADER/UPLOADERFLAGS/UPLOADCMD for a takeover
-    protocol. The wrapper rewrites UPLOAD_PROTOCOL to "custom" right
-    after this call, so the upstream dispatch never inspects these
-    protocols itself."""
-    if upload_protocol == "nrfutil-mcumgr":
-        _configure_nrfutil_mcumgr(env, board)
-    elif upload_protocol == "pyocd":
-        _configure_pyocd(env, board)
-    elif upload_protocol == "probe-rs":
-        _configure_probe_rs(env, board)
-    elif upload_protocol == "sam-ba":
-        _configure_sam_ba(env, platform, board)
-    elif upload_protocol.startswith("jlink"):
-        _configure_jlink(env, board)
-    elif upload_protocol in board.get("debug", {}).get("tools", {}):
-        _configure_openocd(env, platform, board, upload_protocol)
+def _handles_openocd_class(protocol, board, env):
+    # OpenOCD-class takeover applies on nRF MCUs, whose flash/RRAM
+    # writes need a special sequence.
+    return board.get("build.mcu", "").startswith("nrf")
 
 
-def _configure_nrfutil_mcumgr(env, board):
+def _configure_nrfutil_mcumgr(env, platform, board, protocol):
     # Nordic nrfutil MCUboot serial recovery over USB CDC ACM.
     # The board must have MCUboot with serial recovery enabled and the
     # device must be in serial recovery mode (via WAIT_FOR_DFU window,
@@ -293,7 +306,7 @@ def _configure_nrfutil_mcumgr(env, board):
     )
 
 
-def _configure_pyocd(env, board):
+def _configure_pyocd(env, platform, board, protocol):
     _ensure_pyocd_installed(env)
 
     pyocd_target = board.get("upload.pyocd_target")
@@ -336,7 +349,7 @@ def _configure_pyocd(env, board):
     )
 
 
-def _configure_probe_rs(env, board):
+def _configure_probe_rs(env, platform, board, protocol):
     upload_config = board.get("upload", {})
     probe_rs_chip = upload_config.get("probe_rs_chip")
     if not probe_rs_chip:
@@ -376,7 +389,7 @@ def _configure_probe_rs(env, board):
     )
 
 
-def _configure_sam_ba(env, platform, board):
+def _configure_sam_ba(env, platform, board, protocol):
     bossac = join(platform.get_package_dir("tool-bossac-nordicnrf52") or "", "bossac")
     if system() == "Windows":
         bossac += ".exe"
@@ -405,7 +418,7 @@ def _configure_sam_ba(env, platform, board):
         env.Prepend(UPLOADERFLAGS=["--info", "--debug"])
 
 
-def _configure_jlink(env, board):
+def _configure_jlink(env, platform, board, protocol):
     def _jlink_cmd_script(env, source):
         build_dir = env.subst("$BUILD_DIR")
         if not os.path.isdir(build_dir):
@@ -448,13 +461,13 @@ def _configure_jlink(env, board):
     )
 
 
-def _configure_openocd(env, platform, board, upload_protocol):
+def _configure_openocd(env, platform, board, protocol):
     debug_tools = board.get("debug", {}).get("tools", {})
     openocd_args = [
         "-d%d" % (2 if _pio_verbose() else 1)
     ]
     openocd_args.extend(
-        debug_tools.get(upload_protocol).get("server").get("arguments", []))
+        debug_tools.get(protocol).get("server").get("arguments", []))
     if env.GetProjectOption("debug_speed"):
         openocd_args.extend(
             ["-c", "adapter speed %s" % env.GetProjectOption("debug_speed")]
@@ -508,56 +521,58 @@ def _pio_verbose():
     return int(ARGUMENTS.get("PIOVERBOSE", 0))
 
 
-def graft_artifacts(env, board, upload_protocol):
-    """Attach our artifact chain to the build AFTER the upstream script
-    registered its upload target (which under "custom" consumes the
-    ElfToHex default target_firm).
+def _graft_nothing(env, board):
+    """Protocols flashing the upstream custom-branch hex default keep
+    the artifact chain the upstream script already registered."""
 
-    Protocols flashing something other than the upstream hex get their
-    real artifact built here and hung off both the upload and buildprog
-    aliases, and UPLOADCMD is re-pointed at it:
 
-    * nrfutil-mcumgr -> $BUILD_DIR/zephyr/zephyr.signed.bin (imgtool-
-      signed MCUboot image; unsigned .bin fallback when the board
-      declares no imgtool parameters);
-    * sam-ba         -> plain .bin (bossac flashes binaries);
-    * jlink+DFUBOOTHEX -> _signature.bin (SoftDevice bootloader pair).
+def _graft_mcumgr_signed_image(env, board):
+    """Build the MCUboot signed image and make it the upload artifact.
 
-    Returns nothing; call only for takeover protocols.
+    env.MCUbootImage (PlatformIO core builder, enabled for normal
+    builds by the zephyr framework script) signs with the board's
+    header_len/flash_alignment/slot_size + signature key; it returns
+    None (-> unsigned fallback) when the board declares no imgtool
+    params, so non-mcuboot boards are unaffected.
     """
     elf = "$BUILD_DIR/${PROGNAME}.elf"
+    unsigned_bin = env.ElfToBin(
+        join("$BUILD_DIR", "zephyr", "zephyr.bin"), elf)
+    signed_bin = env.MCUbootImage(
+        join("$BUILD_DIR", "zephyr", "zephyr.signed.bin"),
+        unsigned_bin)
+    image = signed_bin if signed_bin else unsigned_bin
+    _attach(env, image)
+    env.Replace(MCUBOOT_IMAGE=str(image[0]))
 
-    if upload_protocol == "nrfutil-mcumgr":
-        unsigned_bin = env.ElfToBin(
-            join("$BUILD_DIR", "zephyr", "zephyr.bin"), elf)
-        # env.MCUbootImage (PlatformIO core builder, enabled for normal
-        # builds by the zephyr framework script) signs with the board's
-        # header_len/flash_alignment/slot_size + signature key; it
-        # returns None (-> unsigned fallback) when the board declares
-        # no imgtool params, so non-mcuboot boards are unaffected.
-        signed_bin = env.MCUbootImage(
-            join("$BUILD_DIR", "zephyr", "zephyr.signed.bin"),
-            unsigned_bin)
-        image = signed_bin if signed_bin else unsigned_bin
-        _attach(env, image)
-        env.Replace(MCUBOOT_IMAGE=str(image[0]))
 
-    elif upload_protocol == "sam-ba":
-        bin_file = env.ElfToBin(join("$BUILD_DIR", "${PROGNAME}"), elf)
-        _attach(env, bin_file)
-        env.Replace(FLASH_IMAGE=str(bin_file[0]))
+def _graft_sam_ba_binary(env, board):
+    """bossac flashes binaries: build the plain .bin and re-point the
+    upload command at it."""
+    elf = "$BUILD_DIR/${PROGNAME}.elf"
+    bin_file = env.ElfToBin(join("$BUILD_DIR", "${PROGNAME}"), elf)
+    _attach(env, bin_file)
+    env.Replace(FLASH_IMAGE=str(bin_file[0]))
 
-    elif upload_protocol.startswith("jlink") and "DFUBOOTHEX" in env:
-        bin_file = env.ElfToBin(join("$BUILD_DIR", "${PROGNAME}"), elf)
-        if "SignBin" in env["BUILDERS"]:
-            signed = env.SignBin(join("$BUILD_DIR", "${PROGNAME}"), bin_file)
-            artifact = signed
-        else:
-            # SignBin is only registered on adafruit-BSP builds; on the
-            # mbed BSP a DFU bootloader pair uploads as a plain binary.
-            artifact = bin_file
-        _attach(env, artifact)
-        env.Replace(FLASH_IMAGE=str(artifact[0]))
+
+def _graft_jlink_dfu_pair(env, board):
+    """Bootloader (DFUBOOTHEX) builds flash the _signature.bin pair
+    (plain application at the linker-script offset, signed half at
+    BOOT_SETTING_ADDR); a non-bootloader jlink takeover grafts nothing.
+    """
+    if "DFUBOOTHEX" not in env:
+        return
+    elf = "$BUILD_DIR/${PROGNAME}.elf"
+    bin_file = env.ElfToBin(join("$BUILD_DIR", "${PROGNAME}"), elf)
+    if "SignBin" in env["BUILDERS"]:
+        signed = env.SignBin(join("$BUILD_DIR", "${PROGNAME}"), bin_file)
+        artifact = signed
+    else:
+        # SignBin is only registered on adafruit-BSP builds; on the
+        # mbed BSP a DFU bootloader pair uploads as a plain binary.
+        artifact = bin_file
+    _attach(env, artifact)
+    env.Replace(FLASH_IMAGE=str(artifact[0]))
 
 
 def _attach(env, artifact):
@@ -566,3 +581,48 @@ def _attach(env, artifact):
     # keep plain `pio run` producing the real artifact too (the pre-
     # upstream behavior: target_firm WAS this artifact)
     env.Depends(env.Alias("buildprog"), artifact)
+
+
+# The takeover registry. Exact-name entries match their key, the jlink
+# entry prefix-matches ("jlink", "jlink-..."), and the openocd entry
+# catches every other key of the board's debug.tools (stlink,
+# cmsis-dap, ...). Everything else — the protocols the upstream
+# skeleton already handles: mbed, nrfjprog, nrfutil, blackmagic —
+# rides the upstream dispatch unchanged.
+PROTOCOLS = {
+    # Nordic nrfutil MCUboot serial recovery over USB CDC (port
+    # resolution / 1200-bps touch live in mcumgrupload.py, this
+    # directory)
+    "nrfutil-mcumgr": Protocol(
+        _always,
+        _configure_nrfutil_mcumgr,
+        _graft_mcumgr_signed_image),
+    # official pyOCD: list/rtt/erase; LM20A flash rides OpenOCD (see
+    # _ensure_pyocd_installed)
+    "pyocd": Protocol(_always, _configure_pyocd),
+    "probe-rs": Protocol(_always, _configure_probe_rs),
+    # our bossac fork carries --verify/--offset/native-USB flags the
+    # generic upstream branch lacks
+    "sam-ba": Protocol(_always, _configure_sam_ba, _graft_sam_ba_binary),
+    "jlink": Protocol(_handles_jlink, _configure_jlink,
+                      _graft_jlink_dfu_pair),
+    "openocd": Protocol(_handles_openocd_class, _configure_openocd),
+}
+
+
+def resolve(upload_protocol, board, env):
+    """The Takeover driving this build's upload, or None to ride the
+    upstream dispatch unchanged."""
+    if not upload_protocol:
+        return None
+    if upload_protocol in PROTOCOLS:
+        candidate = PROTOCOLS[upload_protocol]
+    elif upload_protocol.startswith("jlink"):
+        candidate = PROTOCOLS["jlink"]
+    elif upload_protocol in board.get("debug", {}).get("tools", {}):
+        candidate = PROTOCOLS["openocd"]
+    else:
+        return None
+    if not candidate.handles(upload_protocol, board, env):
+        return None
+    return Takeover(candidate, upload_protocol)

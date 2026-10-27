@@ -24,14 +24,11 @@ platform-nordicnrf52 builder/main.py, executed via env.SConscript below
 with env.PioPlatform() wrapped in an UpstreamPlatformProxy (the router
 in builder/main.py mounts it around this script).
 
-Family-specific deltas are applied around the upstream execution:
-
-  * upload.py (this directory) pre-configures the uploader commands the
-    upstream dispatch does not know (nrfutil-mcumgr / pyocd / probe-rs
-    and the nRF54 RRAM OpenOCD sequences) and rewrites
-    UPLOAD_PROTOCOL to the upstream "custom" passthrough branch;
-  * after the upstream script returns, the MCUboot signed-image chain
-    for nrfutil-mcumgr boards is grafted onto the build.
+Family-specific deltas are applied around the upstream execution: a
+takeover upload protocol (the PROTOCOLS registry in upload.py, this
+directory) is configured and rewritten into the upstream "custom"
+passthrough branch before the upstream script runs, and its real
+artifact chain (signed image / raw binary) is grafted afterwards.
 
 Neither the upstream file nor the framework package is modified.
 """
@@ -54,24 +51,17 @@ family = resolve_board_family(board, env.get("BOARD", ""))
 # builder dir on sys.path (SCons deletes __file__ in SConscript frames,
 # so the host path comes from family.host_dir()).
 sys.path.insert(0, join(family.host_dir(), "builder", "families", "nordic"))
-import upload  # noqa: E402
+from upload import resolve as resolve_upload_protocol  # noqa: E402
 
 platform = env.PioPlatform()  # the UpstreamPlatformProxy while in here
 
-# Our upload protocols ride the upstream "custom" passthrough branch:
-# upload.py pre-configures the command, the upstream dispatch never
-# inspects what it does not know, and afterwards the real artifact
-# (signed image / raw binary) is grafted onto the build for the
-# protocols whose flash target is not the upstream hex default.
-upload_protocol = env.subst("$UPLOAD_PROTOCOL")
-take_over = upload.handles(upload_protocol, board, env)
-
-if take_over:
-    upload.configure(env, platform, board, upload_protocol)
+takeover = resolve_upload_protocol(env.subst("$UPLOAD_PROTOCOL"), board, env)
+if takeover:
+    takeover.configure(env, platform, board)
     env.Replace(UPLOAD_PROTOCOL="custom")
 
-upstream_main = join(family._upstream_platform_dir(), "builder", "main.py")
-env.SConscript(upstream_main, exports="env")
+env.SConscript(join(family._upstream_platform_dir(), "builder", "main.py"),
+               exports="env")
 
-if take_over:
-    upload.graft_artifacts(env, board, upload_protocol)
+if takeover:
+    takeover.graft(env, board)

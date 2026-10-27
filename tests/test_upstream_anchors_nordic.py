@@ -34,8 +34,8 @@ ANCHORS = (
     # env so the wrapper's pre-script rewrite is honored
     ("builder/main.py", r'upload_protocol = env\.subst\("\$UPLOAD_PROTOCOL"\)',
      "upload dispatch reads $UPLOAD_PROTOCOL from the env"),
-    # ElfToBin must stay registered unconditionally (graft_artifacts
-    # relies on it for every takeover artifact chain)
+    # ElfToBin must stay registered unconditionally (the graft functions
+    # rely on it for every takeover artifact chain)
     ("builder/main.py", r'ElfToBin=Builder\(',
      "ElfToBin builder registration"),
     # the zephyr build-pre shim is SConscripted from the framework-zephyr
