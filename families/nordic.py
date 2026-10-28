@@ -98,8 +98,11 @@ class NordicFamily(ChipFamily):
                 for p in platform.packages:
                     if p in ("tool-cmake", "tool-dtc", "tool-ninja"):
                         platform.packages[p]["optional"] = False
+                # framework-zephyr 4.4: the controller's hal/debug.h uses
+                # the asm "inline" qualifier, which GCC < 9 rejects; 12.3
+                # is what upstream nordicnrf52 pins for Zephyr.
                 platform.packages["toolchain-gccarmnoneeabi"][
-                    "version"] = "~1.80201.0"
+                    "version"] = "~1.120301.0"
                 if not IS_WINDOWS:
                     platform.packages["tool-gperf"]["optional"] = False
 
