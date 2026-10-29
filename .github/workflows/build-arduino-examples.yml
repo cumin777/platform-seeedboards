@@ -9,6 +9,7 @@ on:
       - 'platform.py'
       - 'boards/**'
       - 'builder/**'
+      - 'families/**'
       - 'frameworks/arduino.py'
       - 'platform_cfg/**'
       - 'scripts/ci/_examples_build_lib.py'
@@ -21,6 +22,7 @@ on:
       - 'platform.py'
       - 'boards/**'
       - 'builder/**'
+      - 'families/**'
       - 'frameworks/arduino.py'
       - 'platform_cfg/**'
       - 'scripts/ci/_examples_build_lib.py'
@@ -62,7 +64,7 @@ jobs:
           # platform source files: a PR touching builder code must not
           # invalidate the multi-hundred-MB platform/package cache and
           # force a fresh upstream git clone every run.
-          key: ${{ runner.os }}-pio-pkgs-${{ hashFiles('platform.json', 'families/espressif.py') }}
+          key: ${{ runner.os }}-pio-pkgs-${{ hashFiles('platform.json', 'families/*.py') }}
           restore-keys: |
             ${{ runner.os }}-pio-pkgs-
 
