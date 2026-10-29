@@ -170,6 +170,50 @@ def _clear_problematic_pip_cache():
                     pass
 
 
+# Must stay equal to the engine's ZEPHYR_ENV_VERSION in the framework
+# package's scripts/platformio/platformio-build.py ("1.0.0"): that script
+# reads the same marker file after ours and RECREATES the venv whenever
+# the version differs (wiping deps_sha and re-running its own pip). We
+# only append our own deps_sha key, which the engine never touches.
+VENV_DATA_VERSION = "1.0.0"
+
+
+def _pinned_deps():
+    deps = [
+        "pyelftools~=0.27",
+        "PyYAML~=6.0.0",
+        "pykwalify~=1.8.0",
+        "packaging~=23.1.0",
+        "cryptography>=2.6.0",
+        "intelhex~=2.3.0",
+        "click~=8.1.3",
+        "cbor2~=5.4.6",
+        "jsonschema~=4.25.1",
+    ]
+    if os.name == "nt":
+        deps.append("windows-curses")
+    return deps
+
+
+def _deps_digest(requirements, pinned):
+    """Content digest of everything the two pip installs would install.
+
+    Stored in the venv marker; unchanged digest = the venv is already
+    provisioned and both pip subprocesses are skipped (each build used to
+    spawn two pip runs even with nothing to do)."""
+    import hashlib
+    digest = hashlib.sha256()
+    try:
+        with open(requirements, "rb") as fp:
+            digest.update(fp.read())
+    except OSError:
+        digest.update(b"<no-requirements>")
+    for dep in pinned:
+        digest.update(dep.encode("utf-8"))
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
 def _ensure_zephyr_python_env():
     venv_dir = _get_zephyr_venv_dir()
     venv_data_file = join(venv_dir, "pio-zephyr-venv.json")
@@ -179,17 +223,22 @@ def _ensure_zephyr_python_env():
         "python" + (".exe" if os.name == "nt" else ""),
     )
 
-    recreate = not os.path.isfile(python_exe)
-    if not recreate and os.path.isfile(venv_data_file):
+    requirements = join(framework_dir, "scripts", "requirements-base.txt")
+    pinned_deps = _pinned_deps()
+    deps_sha = _deps_digest(requirements, pinned_deps)
+
+    venv_data = {}
+    if os.path.isfile(venv_data_file):
         try:
             with open(venv_data_file, "r", encoding="utf-8") as fp:
                 venv_data = json.load(fp)
-            recreate = venv_data.get("version") != "1.0.0"
         except Exception:
-            recreate = True
-    elif not os.path.isfile(venv_data_file):
-        recreate = True
+            venv_data = {}
 
+    recreate = (
+        not os.path.isfile(python_exe)
+        or venv_data.get("version") != VENV_DATA_VERSION
+    )
     if recreate:
         if os.path.isdir(venv_dir):
             shutil.rmtree(venv_dir, ignore_errors=True)
@@ -198,10 +247,17 @@ def _ensure_zephyr_python_env():
             check=True,
         )
         os.makedirs(venv_dir, exist_ok=True)
-        with open(venv_data_file, "w", encoding="utf-8") as fp:
-            json.dump({"version": "1.0.0"}, fp, indent=2)
+        venv_data = {"version": VENV_DATA_VERSION}
 
-    requirements = join(framework_dir, "scripts", "requirements-base.txt")
+    if not recreate and venv_data.get("deps_sha") == deps_sha:
+        print("[zephyr-prep] venv dependencies unchanged, skipping pip")
+        return
+
+    def _save():
+        venv_data["deps_sha"] = deps_sha
+        with open(venv_data_file, "w", encoding="utf-8") as fp:
+            json.dump(venv_data, fp, indent=2)
+
     _clear_problematic_pip_cache()
     subprocess.run(
         [
@@ -216,19 +272,6 @@ def _ensure_zephyr_python_env():
         ],
         check=True,
     )
-    pinned_deps = [
-        "pyelftools~=0.27",
-        "PyYAML~=6.0.0",
-        "pykwalify~=1.8.0",
-        "packaging~=23.1.0",
-        "cryptography>=2.6.0",
-        "intelhex~=2.3.0",
-        "click~=8.1.3",
-        "cbor2~=5.4.6",
-        "jsonschema~=4.25.1",
-    ]
-    if os.name == "nt":
-        pinned_deps.append("windows-curses")
     subprocess.run(
         [
             python_exe,
@@ -241,6 +284,10 @@ def _ensure_zephyr_python_env():
         ],
         check=True,
     )
+    # Recorded only after both installs succeed -- a failed install leaves
+    # the stale digest in the marker, so the next build re-runs pip instead
+    # of skipping it with a half-provisioned venv.
+    _save()
 
 
 def _ensure_minimal_west_workspace(framework_dir):
@@ -340,9 +387,22 @@ def _preinstall_west_deps(framework_dir, platform_name_hint):
 sys.path.insert(0, join(platform_dir, "builder", "frameworks"))
 from zephyr_modules import git_clone_with_retry  # noqa: E402
 
-_ensure_zephyr_python_env()
-_ensure_minimal_west_workspace(framework_dir)
-_preinstall_west_deps(framework_dir, env.subst("$PIOPLATFORM"))
+
+# Environment preparation, as data: ordered, one (name, step) row each.
+# Adding a step is a one-line diff; the printed [zephyr-prep] tags make
+# build logs addressable per step, and each step stays independently
+# testable. Steps take no arguments -- everything they need is already in
+# module scope (env, framework_dir, ...).
+PREP_STEPS = [
+    ("zephyr-venv", _ensure_zephyr_python_env),
+    ("west-workspace", lambda: _ensure_minimal_west_workspace(framework_dir)),
+    ("west-deps", lambda: _preinstall_west_deps(
+        framework_dir, env.subst("$PIOPLATFORM"))),
+]
+
+for step_name, step in PREP_STEPS:
+    print("[zephyr-prep] %s" % step_name)
+    step()
 
 # Modules: every directory under zephyr/modules/ is provisioned through one
 # generic path (vendored copy or pinned external clone, gated by its
