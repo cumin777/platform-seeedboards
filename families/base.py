@@ -158,7 +158,8 @@ class ChipFamily:
         return []
 
     # ------------------------------------------------------------------
-    # Platform-side hooks (current behavior delegates to platform_cfg/*)
+    # Platform-side hooks (each family owns these; inlined from the
+    # retired platform_cfg/* modules)
     # ------------------------------------------------------------------
 
     def configure_default_packages(self, platform, variables, targets):
