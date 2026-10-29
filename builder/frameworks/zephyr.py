@@ -143,10 +143,6 @@ if platform_board_source_roots:
             shutil.copytree(src, dst)
             print(f"Copied board: {board_name_dir} -> {dst}")
 
-import re
-import time
-
-
 def _get_zephyr_venv_dir():
     return join(
         env.subst("$PROJECT_CORE_DIR"),
@@ -271,43 +267,6 @@ def _ensure_minimal_west_workspace(framework_dir):
             fp.write(expected)
 
 
-def _is_commit_hash(value):
-    return value and re.match(r"[0-9a-f]{7,}$", value) is not None
-
-
-def _git_clone_with_retry(url, dst, revision, max_retries=3, retry_delay=5):
-    """Clone a git repository with retry logic for unstable networks."""
-    for attempt in range(1, max_retries + 1):
-        args = ["git", "clone"]
-        is_commit = _is_commit_hash(revision)
-        if not is_commit and revision:
-            args.extend(["--branch", revision, "--depth", "1"])
-        elif not is_commit:
-            args.extend(["--depth", "1"])
-
-        try:
-            print(f"  Cloning {url} (attempt {attempt}/{max_retries})")
-            subprocess.run(args + [url, dst], check=True,
-                           capture_output=True, text=True)
-            if is_commit and revision:
-                subprocess.run(
-                    ["git", "-C", dst, "checkout", revision],
-                    check=True, capture_output=True, text=True)
-            print(f"  OK: {os.path.basename(dst)}")
-            return True
-        except subprocess.CalledProcessError as e:
-            if os.path.isdir(dst):
-                shutil.rmtree(dst, ignore_errors=True)
-            if attempt < max_retries:
-                print(f"  Failed (attempt {attempt}): {e.stderr.strip() if e.stderr else e}")
-                print(f"  Retrying in {retry_delay}s...")
-                time.sleep(retry_delay)
-            else:
-                print(f"  FAILED after {max_retries} attempts: {url}")
-                return False
-    return False
-
-
 def _preinstall_west_deps(framework_dir, platform_name_hint):
     """Pre-install west.yml dependencies with retry so that install-deps.py
     can skip them later. This avoids the clean_up() wiping everything on
@@ -370,248 +329,37 @@ def _preinstall_west_deps(framework_dir, platform_name_hint):
         revision = proj.get("revision")
         print(f"Pre-installing: {name}")
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        _git_clone_with_retry(proj_url, dst, revision)
+        git_clone_with_retry(proj_url, dst, revision)
 
     print("Pre-install complete.")
-
-
-# ---------------------------------------------------------------------------
-# Edge AI (sdk-edge-ai) integration
-#
-# edge-AI samples reuse Nordic's Edge AI Add-on (sdk-edge-ai v2.1.0), a Zephyr
-# module whose heavy lifting is prebuilt static archives (Axon NPU driver +
-# nRF EdgeAI runtime). It is registered only for samples that opt in via
-# `CONFIG_NRF_EDGEAI=y` in prj.conf, so non-edge-AI samples (e.g. zephyr-blink)
-# are unaffected. The module source is provisioned three ways, in order:
-#   1. XIAO_EDGE_AI_DIR / XIAO_EDGE_IMPULSE_DIR explicit developer override
-#   2. a one-time git clone (fixed revision) into the framework cache
-# This keeps the integration off the (live) framework package and off the shared
-# board JSON, and reproducible on a fresh machine.
-# ---------------------------------------------------------------------------
-
-_EDGE_AI_REMOTE = "https://github.com/nrfconnect/sdk-edge-ai.git"
-_EDGE_AI_REVISION = "3733b1b87c41fb560be1f2a2de646b4e405f156d"  # v2.1.0
-_EDGE_AI_CACHE = join(framework_dir, "_pio", "modules", "sdk-edge-ai")
-
-_EDGE_IMPULSE_REMOTE = "https://github.com/edgeimpulse/edge-impulse-sdk-zephyr.git"
-_EDGE_IMPULSE_REVISION = "69a6b8fcc23515b9d148c9a1459cb53d5efe4801"  # v1.88.1
-_EDGE_IMPULSE_CACHE = join(framework_dir, "_pio", "modules", "edge-impulse-sdk-zephyr")
-
-
-def _prj_conf_has(token):
-    """True if the project's prj.conf contains the given CONFIG token."""
-    project_dir = env.subst("$PROJECT_DIR")
-    for rel in ("zephyr/prj.conf", "prj.conf"):
-        conf = join(project_dir, rel)
-        if os.path.isfile(conf):
-            try:
-                with open(conf, "r", encoding="utf-8", errors="ignore") as fp:
-                    if token in fp.read():
-                        return True
-            except OSError:
-                pass
-    return False
-
-
-def _is_edge_ai_sample():
-    # An edge-AI sample opts in via either the nRF EdgeAI runtime or the bare
-    # Axon NPU driver (e.g. person_detection uses CONFIG_NRF_AXON directly),
-    # or the official Edge AI Data Forwarder protocol.
-    return _prj_conf_has("CONFIG_NRF_EDGEAI=y") or _prj_conf_has(
-        "CONFIG_NRF_AXON=y"
-    ) or _prj_conf_has("CONFIG_DATA_FWD_PROTO=y")
-
-
-def _ensure_module(label, cache_dir, remote, revision, override_env):
-    """Return a valid module root (with zephyr/module.yml), cloning on demand.
-
-    Order: explicit developer override -> cached clone -> git fetch.
-
-    The default never relies on a machine-specific NCS directory: a first build
-    on Windows, Linux, macOS, or CI downloads the pinned upstream revision.
-    """
-    marker = join(cache_dir, "zephyr", "module.yml")
-
-    override = os.environ.get(override_env, "")
-    if override and os.path.isfile(join(override, "zephyr", "module.yml")):
-        return os.path.normpath(override)
-
-    if os.path.isfile(marker):
-        return os.path.normpath(cache_dir)
-
-    print(f"XIAO Edge AI: cloning {label} {revision} -> {cache_dir}")
-    if os.path.isdir(cache_dir):
-        shutil.rmtree(cache_dir, ignore_errors=True)
-    if not _git_clone_with_retry(remote, cache_dir, revision):
-        return None
-    if not os.path.isfile(marker):
-        print(f"XIAO Edge AI: {label} cloned but zephyr/module.yml missing")
-        return None
-    return os.path.normpath(cache_dir)
-
-
-def _provision_xiao_dfu_module(framework_dir):
-    """Refresh the 20B DFU module and board retention configuration.
-
-    Framework board files are copied only when missing, and the framework
-    package is cached by PlatformIO. Refresh both inputs on every 20B build so
-    UART line control, boot-mode retention, and diagnostic output stay in sync
-    with the platform repository.
-    """
-    source_module = join(platform_dir, "zephyr", "modules", "xiao_dfu_reset")
-    target_module = join(framework_dir, "_pio", "modules", "xiao_dfu_reset")
-    source_board = join(platform_dir, "zephyr", "nrf", "boards", "seeed",
-                        "xiao_nrf54lm20b", "nrf54lm20b_cpuapp_common.dtsi")
-    target_board = join(framework_dir, "boards", "seeed", "xiao_nrf54lm20b",
-                        "nrf54lm20b_cpuapp_common.dtsi")
-
-    if not os.path.isdir(source_module):
-        raise RuntimeError("Missing bundled xiao_dfu_reset module")
-    if os.path.isdir(target_module):
-        shutil.rmtree(target_module)
-    elif os.path.exists(target_module):
-        os.remove(target_module)
-    shutil.copytree(source_module, target_module)
-
-    if not os.path.isfile(source_board):
-        raise RuntimeError("Missing XIAO nRF54LM20B board DTSI")
-    shutil.copyfile(source_board, target_board)
-    print("XIAO: refreshed 20B DFU module and boot-mode retention in framework")
-
-
-def _patch_edge_impulse_sdk(ei_dir):
-    """Stop the Edge Impulse SDK from building Espressif (ESP32) sources on ARM.
-
-    Its ARM branch globs "*.s" under the whole SDK; on case-insensitive Windows
-    that also matches the ESP32 Xtensa "*.S" files (porting/espressif/ESP-NN),
-    which (a) are wrong-target assembly for Cortex-M and (b) produce object
-    paths longer than Windows MAX_PATH (260). Exclude the espressif tree. This
-    mirrors how the upstream ESP32 branch already excludes it.
-    """
-    cmake = join(ei_dir, "edge-impulse-sdk", "cmake", "zephyr", "CMakeLists.txt")
-    if not os.path.isfile(cmake):
-        return
-    with open(cmake, "r", encoding="utf-8") as fp:
-        text = fp.read()
-    old = '        RECURSIVE_FIND_FILE_APPEND(EI_SOURCE_FILES "${EI_SDK_FOLDER}" "*.s")\n'
-    new = (
-        '        # XIAO nRF54LM20B: exclude the Espressif (ESP32) tree so its\n'
-        '        # Xtensa .S is not built for ARM (Windows "*.s" matches "*.S")\n'
-        '        # and the object path stays under Windows MAX_PATH (260).\n'
-        '        RECURSIVE_FIND_FILE_EXCLUDE_DIR(EI_SOURCE_FILES '
-        '"${EI_SDK_FOLDER}" "espressif" "*.s")\n'
-    )
-    if old in text and new not in text:
-        text = text.replace(old, new)
-        with open(cmake, "w", encoding="utf-8") as fp:
-            fp.write(text)
-        print("XIAO Edge AI: patched edge-impulse-sdk to exclude ESP32 sources (ARM)")
-
-    # The EXCLUDE_DIR macro matches ".*\/<dir>\/.*" with forward slashes, which
-    # never matches Windows backslash paths -> excludes silently no-op on
-    # Windows. Normalise to forward slashes before matching.
-    utils_cmake = join(ei_dir, "edge-impulse-sdk", "cmake", "utils.cmake")
-    if os.path.isfile(utils_cmake):
-        with open(utils_cmake, "r", encoding="utf-8") as fp:
-            utext = fp.read()
-        u_old = '    IF (file_path MATCHES ".*\\/${exclude_dir}\\/.*")\n'
-        u_new = (
-            '    STRING(REPLACE "\\\\" "/" _fp_norm "${file_path}")\n'
-            '    IF (_fp_norm MATCHES ".*/${exclude_dir}/.*")\n'
-        )
-        if u_old in utext and u_new not in utext:
-            utext = utext.replace(u_old, u_new)
-            with open(utils_cmake, "w", encoding="utf-8") as fp:
-                fp.write(utext)
-            print("XIAO Edge AI: patched edge-impulse-sdk EXCLUDE_DIR macro (Win path-sep)")
-
-
-def _provision_edge_ai():
-    """Register sdk-edge-ai (and edge-impulse-sdk-zephyr if needed) as Zephyr
-    modules for edge-AI samples before the Zephyr build runs."""
-    if not _is_edge_ai_sample():
-        return
-
-    ea_dir = _ensure_module(
-        "sdk-edge-ai", _EDGE_AI_CACHE, _EDGE_AI_REMOTE, _EDGE_AI_REVISION,
-        "XIAO_EDGE_AI_DIR")
-    if not ea_dir:
-        print("XIAO Edge AI: sdk-edge-ai not available (set XIAO_EDGE_AI_DIR or "
-              "allow network for the one-time clone); skipping registration.")
-        return
-
-    modules = [ea_dir]
-    # The hello_ei sample (26) also needs the Edge Impulse SDK Zephyr module.
-    if _prj_conf_has("CONFIG_EDGE_IMPULSE_SDK=y"):
-        ei_dir = _ensure_module(
-            "edge-impulse-sdk-zephyr", _EDGE_IMPULSE_CACHE,
-            _EDGE_IMPULSE_REMOTE, _EDGE_IMPULSE_REVISION,
-            "XIAO_EDGE_IMPULSE_DIR")
-        if ei_dir:
-            _patch_edge_impulse_sdk(ei_dir)
-            modules.append(ei_dir)
-        else:
-            print("XIAO Edge AI: edge-impulse-sdk-zephyr not available; "
-                  "sample 26 (hello_ei) will fail to build.")
-
-    existing = env.get("PIO_NCS_MODULES", "")
-    ordered = existing.split(";") + modules if existing else list(modules)
-    seen, deduped = set(), []
-    for m in ordered:
-        if m and m not in seen:
-            seen.add(m)
-            deduped.append(m)
-    env["PIO_NCS_MODULES"] = ";".join(deduped)
-    os.environ["XIAO_EDGE_AI_DIR"] = ea_dir
-    print(f"XIAO Edge AI: registered modules -> {env['PIO_NCS_MODULES']}")
 
 
 # Pre-install west dependencies with retry before platformio-build.py runs
 # This ensures they exist when install-deps.py checks, avoiding its
 # destructive clean_up() on any single failure.
+sys.path.insert(0, join(platform_dir, "builder", "frameworks"))
+from zephyr_modules import git_clone_with_retry  # noqa: E402
+
 _ensure_zephyr_python_env()
 _ensure_minimal_west_workspace(framework_dir)
 _preinstall_west_deps(framework_dir, env.subst("$PIOPLATFORM"))
-# nRF54LM20B provisioning refreshes the board's DFU-reset module and
-# boot-mode retention in the framework package on every build. Other boards
-# (including STM32C5, whose module block below copies all bundled modules
-# anyway) must not depend on 20B-specific sources existing.
-if zephyr_board == "xiao_nrf54lm20b":
-    _provision_xiao_dfu_module(framework_dir)
-_provision_edge_ai()
 
-# The canonical Zephyr board name (build.zephyr.variant) drives gating;
-# ZEPHYR_EXTRA_MODULES is Zephyr's official way to inject modules outside
-# the west manifest (each module's zephyr/module.yml is then discovered
-# normally). Add a new module by dropping it under zephyr/modules/<name>/
-# — no edit needed here.
-if zephyr_board == "xiao_stm32c5":
-    modules_root = join(platform_dir, "zephyr", "modules")
-    if os.path.isdir(modules_root):
-        extra_modules = [
-            value for value in os.environ.get("ZEPHYR_EXTRA_MODULES", "").split(";")
-            if value
-        ]
-        for entry in os.listdir(modules_root):
-            source_module_dir = join(modules_root, entry)
-            if not os.path.isdir(source_module_dir):
-                continue
-            target_module_dir = join(framework_dir, "_pio", "modules", entry)
-            if os.path.exists(target_module_dir):
-                if os.path.isdir(target_module_dir):
-                    shutil.rmtree(target_module_dir)
-                else:
-                    os.remove(target_module_dir)
-            shutil.copytree(source_module_dir, target_module_dir)
-            extra_modules.append(target_module_dir)
-        os.environ["ZEPHYR_EXTRA_MODULES"] = ";".join(extra_modules)
+# Modules: every directory under zephyr/modules/ is provisioned through one
+# generic path (vendored copy or pinned external clone, gated by its
+# pin.yml) and registered via ZEPHYR_EXTRA_MODULES — Zephyr's official
+# channel, which reaches sysbuild child images (mcuboot) as well. Adding a
+# module = dropping a directory; nothing here changes.
+from zephyr_modules import provision  # noqa: E402
 
-# Apply per-board Zephyr fixes from
-# zephyr/<family>/boards/seeed/<board>/fixes/ (directory convention,
-# dispatched by zephyr_fixes.py — boards without a fixes/ directory get
-# no fixes, so there is no coupling across boards).
-sys.path.insert(0, join(platform_dir, "builder", "frameworks"))
-from zephyr_fixes import apply_all
+provision(platform_dir, framework_dir, zephyr_board,
+          family_id=_family.family_ids[0] if _family.family_ids else "",
+          project_dir=env.subst("$PROJECT_DIR"))
+
+# Apply Zephyr fixes: framework level (zephyr/fixes/, engine patches) first,
+# then this board's fixes under zephyr/<family>/boards/seeed/<board>/fixes/
+# (directory convention, dispatched by zephyr_fixes.py — boards without a
+# fixes/ directory get no fixes, so there is no coupling across boards).
+from zephyr_fixes import apply_all  # noqa: E402
 
 apply_all(platform_dir, framework_dir, zephyr_board,
           _get_framework_version())

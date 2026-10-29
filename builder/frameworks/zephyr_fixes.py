@@ -77,7 +77,7 @@ def apply_all(platform_dir, framework_dir, zephyr_board, version=None):
     Boards without a board-level fixes/ directory get the framework level
     only (nRF54 boards ship none).
     """
-    _apply_fixes_dir(
+    apply_fixes_dir(
         join(platform_dir, *FRAMEWORK_FIXES_DIR), framework_dir,
         "framework (all boards)", version)
     matches = sorted(glob.glob(
@@ -85,10 +85,16 @@ def apply_all(platform_dir, framework_dir, zephyr_board, version=None):
     fixes_dir = matches[0] if matches else None
     if not fixes_dir or not os.path.isdir(fixes_dir):
         return  # this board ships no local fixes
-    _apply_fixes_dir(fixes_dir, framework_dir, zephyr_board, version)
+    apply_fixes_dir(fixes_dir, framework_dir, zephyr_board, version)
 
 
-def _apply_fixes_dir(fixes_dir, framework_dir, zephyr_board, version):
+def apply_fixes_dir(fixes_dir, target_root, label, version=None):
+    """Apply one fixes/ directory (v2 convention) onto target_root.
+
+    target_root is the framework-zephyr package for framework/board-level
+    fixes, or a module tree for a module's own fixes/ (applied right after
+    the module lands in the cache). label names the source in logs.
+    """
     if not os.path.isdir(fixes_dir):
         return
     baseline = _load_baseline(fixes_dir)
@@ -112,9 +118,9 @@ def _apply_fixes_dir(fixes_dir, framework_dir, zephyr_board, version):
         expected = baseline.get(target)
 
         if rel.endswith(PATCH_SUFFIX):
-            _apply_patch_with_context(src, framework_dir, target, expected)
+            _apply_patch_with_context(src, target_root, target, expected)
         else:
-            zephyr_override.apply_override(src, framework_dir, target, expected)
+            zephyr_override.apply_override(src, target_root, target, expected)
 
         applied.append(target)
         if not expected:
@@ -132,8 +138,8 @@ def _apply_fixes_dir(fixes_dir, framework_dir, zephyr_board, version):
             "upstream sha256 so framework upgrades are detected" % ", ".join(no_baseline)
         )
     print(
-        "Applied %d Zephyr fix(es) for board '%s' (Zephyr %s)"
-        % (len(applied), zephyr_board, version)
+        "Applied %d Zephyr fix(es) for %s (Zephyr %s)"
+        % (len(applied), label, version)
     )
 
 
