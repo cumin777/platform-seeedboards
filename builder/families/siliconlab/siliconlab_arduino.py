@@ -17,6 +17,12 @@ Arduino
 Arduino Wiring-based Framework allows writing cross-platform software to
 control devices attached to a wide range of Arduino boards to create all
 kinds of creative coding, interactive objects, spaces or physical experiences.
+
+Provenance: no upstream. Hand-written SCons-ification of the
+SiliconLabsSoftware/arduino 2.3.0 core (matter stack, gsdk.a
+whole-archive linking, ~60 CPPDEFINES, per-variant flags files) — 100%
+Seeed original; upstream platformio has no arduino framework for this
+family (a draft PR, closed 2025).
 """
 import os
 from os import listdir

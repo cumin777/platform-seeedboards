@@ -11,6 +11,27 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Provenance: fork of platformio/platform-siliconlabsefm32 builder/main.py
+# at v11.0.0 (tag fb80476 -> commit 0483049). The upstream has no mg24
+# board and no arduino framework, so this local copy is the executable
+# (local-keep; nothing is loaded from an upstream platform package).
+# Delta vs that upstream (everything else is upstream verbatim):
+# - header block: FRAMEWORK_DIR/VARIANT_DIR/CORE_DIR resolution;
+#   generate_includes_file() builds matter's includes.txt with
+#   -iwithprefixbefore entries (long-path workaround; skips the
+#   openthread/flatbuffers/matter dirs whose time.h conflicts);
+#   fsutil file setCaseSensitiveInfo for the core's api dir on Windows
+#   (case-sensitive include names)
+# - toolchain tools by absolute <package>/bin paths instead of bare
+#   arm-none-eabi-* names
+# - Zephyr pre-build branch removed (referenced a framework-zephyr
+#   package this platform never declares; mg24 boards are Arduino-only)
+# - artifact matrix: ElfToHex, never ElfToBin (nobuild target and
+#   target_firm both .hex)
+# - OpenOCD upload branch (upload_protocol in debug.tools): init/halt/
+#   program-verify-reset/shutdown sequence against the debug-tools
+#   server args, with explicit tool-openocd bin path
 
 import sys
 from platform import system

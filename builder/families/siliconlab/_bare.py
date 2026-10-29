@@ -15,6 +15,12 @@
 #
 # Default flags for bare-metal programming (without any framework layers)
 #
+# Provenance: byte-identical copy of platformio/platform-siliconlabsefm32
+# v11.0.0 (tag fb80476 -> commit 0483049) builder/frameworks/_bare.py,
+# differing only in the missing final newline. Kept as a local file
+# because this local-keep family loads no upstream platform package —
+# the copy is the only executable.
+#
 
 from SCons.Script import DefaultEnvironment
 
