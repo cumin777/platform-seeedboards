@@ -15,6 +15,21 @@ import os
 from os.path import join
 
 
+def patch_target(src_patch):
+    """Framework-relative target path from the patch's own ``+++`` line.
+
+    A patch file's NAME is only a label (multiple patches may touch the same
+    target, e.g. platformio-build.py.01-*.patch .. 05-*.patch); the ``+++``
+    header is the one source of truth for where it lands.
+    """
+    with open(src_patch, "r", encoding="utf-8", newline="") as f:
+        for line in f.read().splitlines():
+            if line.startswith("+++ "):
+                target = line[4:].strip()
+                return _strip_patch_path(target.split("\t", 1)[0])
+    return None
+
+
 def apply_patch(src_patch, framework_dir, target_relpath=None):
     """Apply a unified-diff patch to the framework package (idempotent).
 

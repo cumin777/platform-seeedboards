@@ -4,7 +4,8 @@ Zephyr framework fixes applier (directory convention -- no registry).
 
 Every file under
 
-    zephyr/<family>/boards/seeed/<board>/fixes/
+    zephyr/fixes/                                (framework level: every board)
+    zephyr/<family>/boards/seeed/<board>/fixes/   (board level: that board)
 
 is a fix for the installed framework-zephyr package; the directory IS the
 registration:
@@ -14,8 +15,17 @@ registration:
     fixes.baseline                     "<target> <sha256>" of the pristine
                                        upstream file this fix was cut against
 
+Framework-level fixes (engine patches under zephyr/fixes/scripts/) apply
+first, board-level fixes on top, so a board fix may re-shape a framework
+file by landing after it.
+
 Content gating replaces version strings: before a fix lands (or when a
 patch hunk fails to match), the framework package's file is compared against
+the recorded baseline -- a mismatch means the tarball changed under us and
+the fix must be re-evaluated. Patch hunk mismatches raise, enriched with
+baseline context when available; override drift fails equally hard (a
+whole-file copy over an unknown tree is the most destructive silent
+failure there is), symmetric with the patch path.
 the recorded baseline -- a mismatch means the tarball changed under us and
 the fix must be re-evaluated. Patch hunk mismatches raise, enriched with
 baseline context when available; override drift fails equally hard (a
@@ -57,17 +67,30 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ARTIFACT_SUFFIXES = ("~", ".orig", ".rej", ".bak")
 
 
-def apply_all(platform_dir, framework_dir, zephyr_board, version=None):
-    """Apply every fix under zephyr/<family>/boards/seeed/<zephyr_board>/fixes/.
+FRAMEWORK_FIXES_DIR = ("zephyr", "fixes")
 
-    Boards without a fixes/ directory are a no-op (nRF54 boards ship none).
+
+def apply_all(platform_dir, framework_dir, zephyr_board, version=None):
+    """Apply framework-level fixes (zephyr/fixes/), then this board's fixes
+    under zephyr/<family>/boards/seeed/<zephyr_board>/fixes/.
+
+    Boards without a board-level fixes/ directory get the framework level
+    only (nRF54 boards ship none).
     """
+    _apply_fixes_dir(
+        join(platform_dir, *FRAMEWORK_FIXES_DIR), framework_dir,
+        "framework (all boards)", version)
     matches = sorted(glob.glob(
         join(platform_dir, "zephyr", "*", "boards", "*", zephyr_board, "fixes")))
     fixes_dir = matches[0] if matches else None
     if not fixes_dir or not os.path.isdir(fixes_dir):
         return  # this board ships no local fixes
+    _apply_fixes_dir(fixes_dir, framework_dir, zephyr_board, version)
 
+
+def _apply_fixes_dir(fixes_dir, framework_dir, zephyr_board, version):
+    if not os.path.isdir(fixes_dir):
+        return
     baseline = _load_baseline(fixes_dir)
     applied = []
     no_baseline = []
@@ -77,7 +100,15 @@ def apply_all(platform_dir, framework_dir, zephyr_board, version=None):
         # keys and framework-package paths are "/"-separated -- normalize
         # or every target looks unmatched on Windows (baseline gating dead).
         rel = os.path.relpath(src, fixes_dir).replace(os.sep, "/")
-        target = rel[: -len(PATCH_SUFFIX)] if rel.endswith(PATCH_SUFFIX) else rel
+        if rel.endswith(PATCH_SUFFIX):
+            # The patch's own +++ header is the target of record (a patch
+            # file's name is just a label; several patches may edit the
+            # same file). Baseline keys use that target, not the name.
+            target = zephyr_patch.patch_target(src)
+            if not target:
+                raise RuntimeError("patch has no +++ target header: %s" % src)
+        else:
+            target = rel
         expected = baseline.get(target)
 
         if rel.endswith(PATCH_SUFFIX):

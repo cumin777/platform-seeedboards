@@ -64,15 +64,38 @@ def _iter_fix_files(fixes_dir: Path):
             yield path
 
 
+def _patch_target(patch_file: Path) -> str | None:
+    """Framework-relative target from the patch's own +++ header.
+
+    A patch file's name is only a label (several patches may edit the same
+    file); the +++ header is the target of record, matching the walker.
+    """
+    try:
+        for line in patch_file.read_text(encoding="utf-8",
+                                         errors="replace").splitlines():
+            if line.startswith("+++ "):
+                target = line[4:].strip().split("\t", 1)[0]
+                if target.startswith("a/") or target.startswith("b/"):
+                    target = target[2:]
+                return target
+    except OSError:
+        return None
+    return None
+
+
 def verify_fixes_layout(zephyr_root: Path, known_names: set) -> list:
     """Check 3: fixes board-dir layout consistency.
 
-    Fixes live under zephyr/<family>/boards/seeed/<board>/fixes/; the family
+    Fixes live under zephyr/fixes/ (framework level) or
+    zephyr/<family>/boards/seeed/<board>/fixes/ (board level); the family
     level is discovered by glob (zephyr/*/boards/*/<board>), the same
     convention the builder uses for board dirs.
     """
-    errors = []
-    for fixes_dir in sorted(zephyr_root.glob("*/boards/*/*/fixes")):
+    errors: list[str] = []
+    dirs = sorted(zephyr_root.glob("*/boards/*/*/fixes"))
+    if (zephyr_root / "fixes").is_dir():
+        dirs = [zephyr_root / "fixes"] + dirs
+    for fixes_dir in dirs:
         if not fixes_dir.is_dir():
             continue
         board_dir = fixes_dir.parent
@@ -114,26 +137,35 @@ def verify_fixes_layout(zephyr_root: Path, known_names: set) -> list:
                 "fixes/ for board %r has no %s" % (board_dir.name, BASELINE_NAME)
             )
 
-        fix_targets = set()
+        fix_targets = {}  # target -> list of patch/override files providing it
         for fix_file in _iter_fix_files(fixes_dir):
             rel = fix_file.relative_to(fixes_dir).as_posix()
             if rel.startswith("/") or ".." in fix_file.parts:
                 errors.append("fix escapes the fixes tree: %s" % fix_file)
                 continue
-            target = rel[: -len(PATCH_SUFFIX)] if rel.endswith(PATCH_SUFFIX) else rel
-            fix_targets.add(target)
+            if rel.endswith(PATCH_SUFFIX):
+                target = _patch_target(fix_file)
+                if not target:
+                    errors.append(
+                        "patch %s (board %r) has no +++ target header"
+                        % (rel, board_dir.name)
+                    )
+                    continue
+            else:
+                target = rel
+            fix_targets.setdefault(target, []).append(fix_file)
             if target not in baseline:
                 errors.append(
                     "fix %s (board %r) has no %s entry"
                     % (rel, board_dir.name, BASELINE_NAME)
                 )
-        for target in sorted(set(baseline) - fix_targets):
+        for target in sorted(set(baseline) - set(fix_targets)):
             errors.append(
                 "%s lists target %r (board %r) with no fix file"
                 % (BASELINE_NAME, target, board_dir.name)
             )
 
-        if board_dir.name not in known_names:
+        if fixes_dir != zephyr_root / "fixes" and board_dir.name not in known_names:
             errors.append(
                 "fixes/ under %s but no board declares this board_name"
                 % board_dir
