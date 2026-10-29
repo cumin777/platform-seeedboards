@@ -1,5 +1,0 @@
-# Provisioning descriptor for the vendored uf2_dfu_reset module.
-# 1200-bps touch -> TinyUF2 DBL_TAP magic -> NVIC reset into the UF2
-# bootloader (STM32C5). Pending merge with xiao_dfu_reset (plan G4).
-gate:
-  boards: [xiao_stm32c5]

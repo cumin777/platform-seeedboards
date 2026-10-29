@@ -1,7 +1,0 @@
-# Provisioning descriptor for the vendored xiao_dfu_reset module.
-# 1200-bps USB CDC touch -> boot-mode retention -> cold reboot into the
-# MCUboot loader (nRF54LM20A V2 / nRF54LM20B). Kconfig self-gates per board
-# revision (default y if BOARD_XIAO_NRF54LM20*); this gate only keeps the
-# module away from unrelated families.
-gate:
-  boards: [xiao_nrf54lm20a, xiao_nrf54lm20b]

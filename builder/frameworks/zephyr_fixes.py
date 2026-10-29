@@ -26,11 +26,6 @@ the fix must be re-evaluated. Patch hunk mismatches raise, enriched with
 baseline context when available; override drift fails equally hard (a
 whole-file copy over an unknown tree is the most destructive silent
 failure there is), symmetric with the patch path.
-the recorded baseline -- a mismatch means the tarball changed under us and
-the fix must be re-evaluated. Patch hunk mismatches raise, enriched with
-baseline context when available; override drift fails equally hard (a
-whole-file copy over an unknown tree is the most destructive silent
-failure there is), symmetric with the patch path.
 
 Executors are the unchanged pure modules zephyr_patch / zephyr_override.
 The board's family root is discovered by glob (zephyr/*/boards/*), the same
