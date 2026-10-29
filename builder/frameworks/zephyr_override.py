@@ -27,12 +27,14 @@ def apply_override(src_override, framework_dir, target_relpath, baseline_sha=Non
       - target already equals our override source (re-run build after a previous
         apply) → idempotent, no warning;
       - target equals baseline_sha (upstream original) → about to apply, ok;
-      - target matches neither → WARN (upstream likely upgraded; re-evaluate).
+      - target matches neither → RuntimeError (upstream likely upgraded; the
+        old override would clobber a file it was never cut against). Drift
+        fails hard here, symmetric with the patch executor: a whole-file
+        replacement is the most destructive thing a fix can do.
       A missing target (upstream file absent) is the typical override case and
-      produces no baseline warning. Non-blocking in all cases.
+      produces no baseline complaint. No baseline recorded → no gate.
     """
     dst = join(framework_dir, target_relpath)
-    warning = None
     baseline_ok = None
     override_src_sha = _sha256(src_override)
 
@@ -42,13 +44,13 @@ def apply_override(src_override, framework_dir, target_relpath, baseline_sha=Non
             # Already our override version (previous build applied it) — idempotent.
             baseline_ok = None
         elif actual != baseline_sha:
-            warning = (
-                "override baseline mismatch for %s: expected upstream %s, got %s "
-                "(framework package may have been upgraded; re-evaluate whether "
-                "this override still applies)" % (target_relpath, baseline_sha, actual)
-            )
-            print("WARNING: " + warning)
             baseline_ok = False
+            raise RuntimeError(
+                "override baseline mismatch for %s: expected upstream %s, "
+                "got %s (framework package may have been upgraded; "
+                "re-evaluate whether this override still applies)"
+                % (target_relpath, baseline_sha, actual)
+            )
         else:
             baseline_ok = True
 
@@ -56,7 +58,7 @@ def apply_override(src_override, framework_dir, target_relpath, baseline_sha=Non
     shutil.copy2(src_override, dst)
     print("Applied Zephyr override: %s -> %s" % (target_relpath, os.path.basename(src_override)))
 
-    return {"applied": True, "baseline_ok": baseline_ok, "warning": warning}
+    return {"applied": True, "baseline_ok": baseline_ok}
 
 
 def _sha256(path):

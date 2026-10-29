@@ -29,7 +29,7 @@ def apply_patch(src_patch, framework_dir, target_relpath=None):
     name = os.path.basename(src_patch)
     if stats["applied"] > 0:
         print("Applied Zephyr patch: %s (%d hunk(s))" % (name, stats["applied"]))
-    elif stats["already-applied"] > 0:
+    elif stats["already-applied"] + stats["already-applied-deletion"] > 0:
         print("Patch already applied, skipped: %s" % name)
     return stats
 
@@ -78,15 +78,22 @@ def _write_text_lines(file_path, lines, newline, trailing_newline):
         f.write(text)
 
 
-def _apply_patch_hunk(file_path, old_lines, new_lines):
+def _apply_patch_hunk(file_path, old_lines, new_lines, has_additions=True):
     lines, newline, trailing_newline = _read_text_lines(file_path)
 
-    # Check "already applied" FIRST: for pure-context insertion hunks the old
-    # block keeps matching after the hunk lands, so checking old first made
-    # every rebuild re-insert the block (observed 4x duplication in a
-    # production package cache). Checking new first is correct for
-    # replacement hunks too: new-lines present means the change is in.
-    if _find_block(lines, new_lines) >= 0:
+    # "Already applied" detection depends on the hunk shape:
+    # - hunks WITH '+' lines (insertion/replacement): the new block is the
+    #   applied-state marker. Check it FIRST -- for pure-context insertions
+    #   the old block keeps matching after the hunk lands, so checking old
+    #   first re-inserted the block on every rebuild (observed 4x
+    #   duplication in a production package cache).
+    # - hunks WITHOUT '+' lines (deletions): the new block is context-only
+    #   (or empty), which exists in the unpatched file by construction --
+    #   new-block presence proves nothing. The applied-state marker is the
+    #   OLD block being gone. _find_block returns 0 for an empty block, so
+    #   new-first would skip deletions outright (including deletions at a
+    #   hunk edge where the context-only new block trivially matches).
+    if has_additions and new_lines and _find_block(lines, new_lines) >= 0:
         return "already-applied"
 
     old_index = _find_block(lines, old_lines)
@@ -94,6 +101,13 @@ def _apply_patch_hunk(file_path, old_lines, new_lines):
         lines[old_index:old_index + len(old_lines)] = new_lines
         _write_text_lines(file_path, lines, newline, trailing_newline)
         return "applied"
+
+    if not has_additions or not new_lines:
+        # Distinct from "already-applied": the old block is gone (deleted)
+        # but nothing in this hunk proves WHY. Callers with a baseline can
+        # disambiguate (pristine target = the patch never applied = patch
+        # itself is wrong); without one it stays a silent skip, unchanged.
+        return "already-applied-deletion"
 
     raise RuntimeError("patch hunk did not match %s" % file_path)
 
@@ -105,17 +119,21 @@ def _apply_unified_patch(patch_path, target_root):
     target_relpath = None
     old_lines = []
     new_lines = []
-    stats = {"applied": 0, "already-applied": 0}
+    hunk_has_additions = False
+    stats = {"applied": 0, "already-applied": 0,
+             "already-applied-deletion": 0}
 
     def flush_hunk():
+        nonlocal hunk_has_additions
         if target_relpath is None or (not old_lines and not new_lines):
             return
 
         file_path = join(target_root, target_relpath)
-        result = _apply_patch_hunk(file_path, old_lines, new_lines)
+        result = _apply_patch_hunk(file_path, old_lines, new_lines, hunk_has_additions)
         stats[result] += 1
         old_lines.clear()
         new_lines.clear()
+        hunk_has_additions = False
 
     for line in patch_lines:
         if line.startswith("+++ "):
@@ -140,6 +158,7 @@ def _apply_unified_patch(patch_path, target_root):
             old_lines.append(line[1:])
         elif line.startswith("+"):
             new_lines.append(line[1:])
+            hunk_has_additions = True
         elif line.startswith("\\ No newline at end of file"):
             continue
         elif line.startswith(("diff --git ", "index ", "--- ")):

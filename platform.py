@@ -82,8 +82,8 @@ class SeeedstudioPlatform(PlatformBase):
 
         Derived from the board manifest's build.zephyr.variant: the first
         component of `board[@revision]/soc/...` is the board.name, which keys
-        the per-board fixes under zephyr/{patches,overrides}/<board>/ and in
-        zephyr/fixes.yml (a board revision collapses to its shared board dir).
+        the per-board fixes under zephyr/<family>/boards/seeed/<board>/fixes/
+        (a board revision collapses to its shared board dir).
         Returns '' if the board declares no variant (no local fixes to apply).
         """
         if not board_name:

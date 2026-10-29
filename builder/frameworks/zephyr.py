@@ -53,6 +53,10 @@ from families import resolve_board_family
 
 _family = resolve_board_family(env.BoardConfig(), board_name)
 platform_dir = _family.host_dir()
+# Canonical Zephyr board name (build.zephyr.variant's first component) —
+# the one vocabulary for every board-specific gate below (module
+# provisioning, fixes dispatch), never the PIO board id.
+zephyr_board = platform.get_zephyr_board_name(board_name)
 
 _zephyr_platform_override = _family.zephyr_pioplatform()
 if _zephyr_platform_override:
@@ -76,7 +80,7 @@ hal_nordic_dir = join(framework_dir, "_pio", "modules", "hal", "nordic")
 # users to add to nRF Connect Board Roots, so it may only contain boards whose SoC and
 # drivers exist unpatched in the target SDK — a board referencing a SoC missing from
 # the SDK (e.g. xiao_stm32c5's stm32c5a3xx in NCS) breaks the extension's SoC cache
-# for every board. Boards that depend on fixes.yml fixes belong in their own family
+# for every board. Boards that depend on framework fixes belong in their own family
 # root (zephyr/stm32) and reach the framework only through this copy step.
 # glob() also returns files; a non-directory here would make os.listdir()
 # below raise and kill every build, so keep directories only.
@@ -869,15 +873,20 @@ _patch_platformio_object_naming(framework_dir)
 _patch_platformio_mcuboot_signing(framework_dir)
 _patch_platformio_prebuilt_lib_linking(framework_dir)
 _patch_platformio_extra_modules(framework_dir)
-_provision_xiao_dfu_module(framework_dir)
+# nRF54LM20B provisioning refreshes the board's DFU-reset module and
+# boot-mode retention in the framework package on every build. Other boards
+# (including STM32C5, whose module block below copies all bundled modules
+# anyway) must not depend on 20B-specific sources existing.
+if zephyr_board == "xiao_nrf54lm20b":
+    _provision_xiao_dfu_module(framework_dir)
 _provision_edge_ai()
 
-if board_name == "seeed-xiao-stm32c5":
-    # Copy every bundled Zephyr module under zephyr/modules/ into the framework
-    # package and register each via ZEPHYR_EXTRA_MODULES, which is Zephyr's
-    # official way to inject modules outside the west manifest (each module's
-    # zephyr/module.yml is then discovered normally). Add a new module by
-    # simply dropping it under zephyr/modules/<name>/ — no edit needed here.
+# The canonical Zephyr board name (build.zephyr.variant) drives gating;
+# ZEPHYR_EXTRA_MODULES is Zephyr's official way to inject modules outside
+# the west manifest (each module's zephyr/module.yml is then discovered
+# normally). Add a new module by dropping it under zephyr/modules/<name>/
+# — no edit needed here.
+if zephyr_board == "xiao_stm32c5":
     modules_root = join(platform_dir, "zephyr", "modules")
     if os.path.isdir(modules_root):
         extra_modules = [
@@ -898,14 +907,14 @@ if board_name == "seeed-xiao-stm32c5":
             extra_modules.append(target_module_dir)
         os.environ["ZEPHYR_EXTRA_MODULES"] = ";".join(extra_modules)
 
-# Apply per-board Zephyr fixes (patches + overrides) registered in
-# zephyr/fixes.yml. Dispatched by zephyr_fixes.py — boards absent from the
-# manifest get no fixes, so there is no coupling across boards/packages.
+# Apply per-board Zephyr fixes from
+# zephyr/<family>/boards/seeed/<board>/fixes/ (directory convention,
+# dispatched by zephyr_fixes.py — boards without a fixes/ directory get
+# no fixes, so there is no coupling across boards).
 sys.path.insert(0, join(platform_dir, "builder", "frameworks"))
 from zephyr_fixes import apply_all
 
-apply_all(platform_dir, framework_dir,
-          platform.get_zephyr_board_name(board_name),
+apply_all(platform_dir, framework_dir, zephyr_board,
           _get_framework_version())
 
 SConscript(
