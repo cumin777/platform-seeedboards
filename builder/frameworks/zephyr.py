@@ -118,7 +118,6 @@ def _board_copy_mode():
 
 if platform_board_source_roots:
     os.makedirs(framework_vendor_boards_dir, exist_ok=True)
-    import shutil
     board_copy_mode = _board_copy_mode()
     for platform_boards_dir in platform_board_source_roots:
         for board_name_dir in os.listdir(platform_boards_dir):
@@ -144,13 +143,6 @@ if platform_board_source_roots:
 
 import re
 import time
-
-
-def _ensure_system_path_available():
-    """Keep system tools like git available for west/zephyr helper scripts."""
-    current_path = os.environ.get("PATH", "")
-    if current_path:
-        os.environ["PATH"] = current_path
 
 
 def _get_zephyr_venv_dir():
@@ -597,7 +589,6 @@ def _git_clone_with_retry(url, dst, revision, max_retries=3, retry_delay=5):
             return True
         except subprocess.CalledProcessError as e:
             if os.path.isdir(dst):
-                import shutil
                 shutil.rmtree(dst, ignore_errors=True)
             if attempt < max_retries:
                 print(f"  Failed (attempt {attempt}): {e.stderr.strip() if e.stderr else e}")
@@ -780,61 +771,6 @@ def _provision_xiao_dfu_module(framework_dir):
     print("XIAO: refreshed 20B DFU module and boot-mode retention in framework")
 
 
-def _patch_cdc_vidpid(framework_dir):
-    """Force the XIAO nRF54LM20B app CDC to Seeed 0x2886:0x8013.
-
-    The VID/PID override belongs in the board's Kconfig.defconfig, but the
-    board-copy step is 'missing-only' for Zephyr >=4.4 (see commit f629163),
-    so a framework copy made before the override was added is never refreshed
-    and the device enumerates with Zephyr's stock 0x2fe3:0x0004 -- which the
-    1200-bps DFU upload path (nrf_build.py _APP_CDC_VIDPID="2886:8013") cannot
-    find, so auto-flashing falls back to manual DFU. Inject the override into
-    the framework's copied Kconfig.defconfig on every build (idempotent), so
-    new and existing installs both get 2886:8013 without touching the
-    missing-only copy logic.
-    """
-    path = join(framework_dir, "boards", "seeed", "xiao_nrf54lm20b",
-                "Kconfig.defconfig")
-    if not os.path.isfile(path):
-        return
-    with open(path, "r", encoding="utf-8") as fp:
-        text = fp.read()
-
-    # Fresh copy from a platform source that already carries the override ->
-    # nothing to do (idempotent on repeat builds too).
-    if "CDC_ACM_SERIAL_PID" in text:
-        return
-
-    override = (
-        "\n"
-        "config CDC_ACM_SERIAL_VID\n"
-        "\thex\n"
-        "\tdefault 0x2886\n"
-        "\n"
-        "config CDC_ACM_SERIAL_PID\n"
-        "\thex\n"
-        "\tdefault 0x8013\n"
-        "\n"
-        "config CDC_ACM_SERIAL_PRODUCT_STRING\n"
-        "\tstring\n"
-        "\tdefault \"XIAO_NRF54LM20B\"\n"
-    )
-    src_line = 'source "boards/common/usb/Kconfig.cdc_acm_serial.defconfig"'
-    if src_line in text:
-        text = text.replace(src_line, src_line + override, 1)
-    elif "endif # BOARD_XIAO_NRF54LM20B_NRF54LM20B_CPUAPP" in text:
-        text = text.replace(
-            "endif # BOARD_XIAO_NRF54LM20B_NRF54LM20B_CPUAPP",
-            override + "endif # BOARD_XIAO_NRF54LM20B_NRF54LM20B_CPUAPP", 1)
-    else:
-        # Unrecognised file shape; leave it untouched rather than corrupt it.
-        return
-
-    with open(path, "w", encoding="utf-8") as fp:
-        fp.write(text)
-    print("XIAO: ensured CDC ACM VID:PID = 2886:8013 in board Kconfig.defconfig")
-
-
 def _patch_edge_impulse_sdk(ei_dir):
     """Stop the Edge Impulse SDK from building Espressif (ESP32) sources on ARM.
 
@@ -925,7 +861,6 @@ def _provision_edge_ai():
 # Pre-install west dependencies with retry before platformio-build.py runs
 # This ensures they exist when install-deps.py checks, avoiding its
 # destructive clean_up() on any single failure.
-_ensure_system_path_available()
 _ensure_zephyr_python_env()
 _ensure_minimal_west_workspace(framework_dir)
 _preinstall_west_deps(framework_dir, env.subst("$PIOPLATFORM"))
@@ -935,7 +870,6 @@ _patch_platformio_mcuboot_signing(framework_dir)
 _patch_platformio_prebuilt_lib_linking(framework_dir)
 _patch_platformio_extra_modules(framework_dir)
 _provision_xiao_dfu_module(framework_dir)
-_patch_cdc_vidpid(framework_dir)
 _provision_edge_ai()
 
 if board_name == "seeed-xiao-stm32c5":

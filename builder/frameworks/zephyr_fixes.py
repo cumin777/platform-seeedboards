@@ -26,7 +26,9 @@ try:
     import yaml
 except ImportError:
     import subprocess
-    subprocess.run(["pip", "install", "pyyaml"], check=True)
+    import sys
+    subprocess.run([sys.executable, "-m", "pip", "install", "pyyaml"],
+                   check=True)
     import yaml
 
 # Executors live next to this module.
