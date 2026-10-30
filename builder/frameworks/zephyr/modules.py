@@ -50,9 +50,9 @@ except ImportError:
         [sys.executable, "-m", "pip", "install", "pyyaml"], check=True)
     import yaml
 
-# zephyr_fixes lives next to this module; the zephyr.py builder puts this
-# directory on sys.path before importing.
-import zephyr_fixes
+# fixes.py lives next to this module; main.py puts this directory on
+# sys.path before importing.
+import fixes
 
 PIN_NAME = "pin.yml"
 _PRJ_CONF_CANDIDATES = ("zephyr/prj.conf", "prj.conf")
@@ -268,8 +268,8 @@ def _ensure_pinned(name, spec, platform_dir, framework_dir):
             # nothing and self-heals a cache that predates a fix.
             if override_env:
                 os.environ[override_env] = os.path.normpath(cache_dir)
-            zephyr_fixes.apply_fixes_dir(fixes_dir, cache_dir,
-                                         "module '%s'" % name, None)
+            fixes.apply_fixes_dir(fixes_dir, cache_dir,
+                                  "module '%s'" % name, None)
             return os.path.normpath(cache_dir)
         print("XIAO module: pin changed for %s (%s -> %s), re-cloning"
               % (name, recorded.get("revision") or "?", revision or "?"))
@@ -287,6 +287,6 @@ def _ensure_pinned(name, spec, platform_dir, framework_dir):
         # Publish the cache path so sample CMakeLists (which read e.g.
         # XIAO_EDGE_AI_DIR directly) work without a developer override.
         os.environ[override_env] = os.path.normpath(cache_dir)
-    zephyr_fixes.apply_fixes_dir(fixes_dir, cache_dir,
-                                 "module '%s'" % name, None)
+    fixes.apply_fixes_dir(fixes_dir, cache_dir,
+                          "module '%s'" % name, None)
     return os.path.normpath(cache_dir)

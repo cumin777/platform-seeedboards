@@ -243,7 +243,7 @@ class NordicFamily(ChipFamily):
         if framework != "arduino":
             return []
         # builder/ is not a package: the hooks module comes into reach
-        # the same way builder/frameworks/zephyr.py reaches zephyr_fixes
+        # the same way builder/frameworks/zephyr/main.py reaches fixes
         # — its directory on sys.path.
         hooks_dir = join(self.host_dir(), "builder", "families", "nordic")
         if hooks_dir not in sys.path:

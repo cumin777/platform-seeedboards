@@ -384,8 +384,8 @@ def _preinstall_west_deps(framework_dir, platform_name_hint):
 # Pre-install west dependencies with retry before platformio-build.py runs
 # This ensures they exist when install-deps.py checks, avoiding its
 # destructive clean_up() on any single failure.
-sys.path.insert(0, join(platform_dir, "builder", "frameworks"))
-from zephyr_modules import git_clone_with_retry  # noqa: E402
+sys.path.insert(0, join(platform_dir, "builder", "frameworks", "zephyr"))
+from modules import git_clone_with_retry  # noqa: E402
 
 
 # Environment preparation, as data: ordered, one (name, step) row each.
@@ -409,7 +409,7 @@ for step_name, step in PREP_STEPS:
 # pin.yml) and registered via ZEPHYR_EXTRA_MODULES — Zephyr's official
 # channel, which reaches sysbuild child images (mcuboot) as well. Adding a
 # module = dropping a directory; nothing here changes.
-from zephyr_modules import provision  # noqa: E402
+from modules import provision  # noqa: E402
 
 provision(platform_dir, framework_dir, zephyr_board,
           family_id=_family.family_ids[0] if _family.family_ids else "",
@@ -417,9 +417,9 @@ provision(platform_dir, framework_dir, zephyr_board,
 
 # Apply Zephyr fixes: framework level (zephyr/fixes/, engine patches) first,
 # then this board's fixes under zephyr/<family>/boards/seeed/<board>/fixes/
-# (directory convention, dispatched by zephyr_fixes.py — boards without a
+# (directory convention, dispatched by fixes.py — boards without a
 # fixes/ directory get no fixes, so there is no coupling across boards).
-from zephyr_fixes import apply_all  # noqa: E402
+from fixes import apply_all  # noqa: E402
 
 apply_all(platform_dir, framework_dir, zephyr_board,
           _get_framework_version())

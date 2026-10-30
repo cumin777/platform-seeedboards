@@ -1,11 +1,11 @@
-"""Unit tests for builder/frameworks/zephyr_fixes.py (fixes walker).
+"""Unit tests for builder/frameworks/zephyr/fixes.py (fixes walker).
 
 Exercises apply_all against a synthetic platform tree (family board dir
 with fixes/) and framework tree: fresh apply must be warning-free with
 nested-subdir fix paths (pins the Windows path normalization -- without
 it, forward-slash baseline keys never match backslash relpaths), re-runs
-must be idempotent, drift and malformed baselines must warn, and boards
-without a fixes/ directory must be silent no-ops.
+must be idempotent, drift must fail loudly (override and patch alike),
+and boards without a fixes/ directory must be silent no-ops.
 """
 
 import hashlib
@@ -15,11 +15,11 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BUILDER_FRAMEWORKS = REPO_ROOT / "builder" / "frameworks"
+BUILDER_FRAMEWORKS = REPO_ROOT / "builder" / "frameworks" / "zephyr"
 if str(BUILDER_FRAMEWORKS) not in sys.path:
     sys.path.insert(0, str(BUILDER_FRAMEWORKS))
 
-import zephyr_fixes  # noqa: E402
+import fixes  # noqa: E402
 
 PRISTINE_PATCH_TARGET = "line-a\nline-b\nline-c\n"
 PRISTINE_OVERRIDE_TARGET = "original driver content\n"
@@ -77,7 +77,7 @@ class TestFreshApply:
         # baseline keys on every platform; a mismatch here would print
         # "no fixes.baseline entry" + "stale" warnings on every build.
         platform, fw, _ = make_tree(tmp_path)
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         out = capsys.readouterr().out
         assert "WARNING" not in out
         assert (fw / "drivers" / "adc.c").read_text(encoding="utf-8") == (
@@ -92,13 +92,13 @@ class TestFreshApply:
         # Same tree under a different family root: discovery is the
         # zephyr/*/boards/*/<board> glob, not a hardcoded family.
         platform, fw, _ = make_tree(tmp_path, family="esp")
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         assert "Applied 2 Zephyr fix(es)" in capsys.readouterr().out
 
     def test_rerun_is_idempotent(self, tmp_path, capsys):
         platform, fw, _ = make_tree(tmp_path)
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         adc = (fw / "drivers" / "adc.c").read_text(encoding="utf-8")
         assert adc.count("line-b2") == 1
 
@@ -128,7 +128,7 @@ class TestFrameworkLevel:
         # Both .01/.02 files land on scripts/engine.py (their +++ header),
         # applied in sorted name order; the single baseline key covers both.
         platform, fw = self.make_framework_tree(tmp_path)
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_any", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_any", "4.4.0")
         out = capsys.readouterr().out
         assert "WARNING" not in out
         assert (fw / "scripts" / "engine.py").read_text(
@@ -138,7 +138,7 @@ class TestFrameworkLevel:
             self, tmp_path, capsys):
         # A board with no board-level fixes dir still gets framework fixes.
         platform, fw = self.make_framework_tree(tmp_path)
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_nofixes", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_nofixes", "4.4.0")
         assert (fw / "scripts" / "engine.py").read_text(
             encoding="utf-8") == "head\nengine-one\nengine-two\ntail\n"
 
@@ -147,7 +147,7 @@ class TestFrameworkLevel:
         (fw / "scripts" / "engine.py").write_text(
             "rewritten upstream\n", encoding="utf-8", newline="\n")
         with pytest.raises(RuntimeError) as excinfo:
-            zephyr_fixes.apply_all(str(platform), str(fw), "xiao_any", "4.4.0")
+            fixes.apply_all(str(platform), str(fw), "xiao_any", "4.4.0")
         assert "baseline drift" in str(excinfo.value)
 
     def test_patch_without_plus_target_header_raises(self, tmp_path):
@@ -156,7 +156,7 @@ class TestFrameworkLevel:
          / "engine.py.03-bad.patch").write_text(
             "not a patch at all\n", encoding="utf-8", newline="\n")
         with pytest.raises(RuntimeError) as excinfo:
-            zephyr_fixes.apply_all(str(platform), str(fw), "xiao_any", "4.4.0")
+            fixes.apply_all(str(platform), str(fw), "xiao_any", "4.4.0")
         assert "+++ target header" in str(excinfo.value)
 
 
@@ -164,7 +164,7 @@ class TestNoFixesBoard:
     def test_board_without_fixes_dir_is_silent_noop(self, tmp_path, capsys):
         platform, fw, _ = make_tree(tmp_path)
         (tmp_path / "platform" / "zephyr" / "nrf" / "boards" / "seeed" / "xiao_clean").mkdir()
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_clean", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_clean", "4.4.0")
         out = capsys.readouterr().out
         assert out == ""
 
@@ -177,7 +177,7 @@ class TestArtifactSkip:
         (fixes_dir / ".DS_Store").write_text("junk\n", encoding="utf-8")
         (fixes_dir / "drivers" / "adc.c~").write_text("junk\n", encoding="utf-8")
         (fixes_dir / "drivers" / "adc.c.orig").write_text("junk\n", encoding="utf-8")
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         out = capsys.readouterr().out
         assert out.count("Skipping non-fix artifact") == 3
         assert not (fw / ".DS_Store").exists()
@@ -198,7 +198,7 @@ class TestBaselineGating:
             "drifted upstream content\n", encoding="utf-8", newline="\n"
         )
         try:
-            zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+            fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         except RuntimeError as exc:
             assert "override baseline mismatch" in str(exc)
         else:
@@ -223,7 +223,7 @@ class TestBaselineGating:
         with open(fixes_dir / "fixes.baseline", "a", encoding="utf-8") as fp:
             fp.write("drivers/gone.c %s\n" % sha(other_pristine))
         try:
-            zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+            fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         except RuntimeError as exc:
             assert "patch/baseline mismatch" in str(exc)
         else:
@@ -241,9 +241,9 @@ class TestBaselineGating:
         target.write_text("line-a\nline-b\n", encoding="utf-8", newline="\n")
         with open(fixes_dir / "fixes.baseline", "a", encoding="utf-8") as fp:
             fp.write("drivers/gone.c %s\n" % sha("line-a\nline-b\n"))
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         assert target.read_text(encoding="utf-8") == "\n"  # deletion landed
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         out = capsys.readouterr().out
         assert "patch/baseline mismatch" not in out
 
@@ -253,7 +253,7 @@ class TestBaselineGating:
             "unrelated upstream rewrite\n", encoding="utf-8", newline="\n"
         )
         try:
-            zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+            fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         except RuntimeError as exc:
             assert "patch hunk did not match" in str(exc)
         else:
@@ -270,7 +270,7 @@ class TestBaselineGating:
             % (sha(PRISTINE_PATCH_TARGET), sha(PRISTINE_OVERRIDE_TARGET)),
             encoding="utf-8", newline="\n",
         )
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         out = capsys.readouterr().out
         assert "invalid fixes.baseline line" in out
         assert "override baseline mismatch" not in out
@@ -280,7 +280,7 @@ class TestBaselineGating:
         platform, fw, fixes_dir = make_tree(tmp_path)
         with open(fixes_dir / "fixes.baseline", "a", encoding="utf-8") as fp:
             fp.write("drivers/ghost.c %s\n" % ("c" * 64))
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         assert "lists targets with no fix file" in capsys.readouterr().out
 
     def test_fix_without_baseline_entry_warns(self, tmp_path, capsys):
@@ -288,5 +288,5 @@ class TestBaselineGating:
         (fixes_dir / "drivers" / "orphan.c").write_text(
             "x\n", encoding="utf-8", newline="\n"
         )
-        zephyr_fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
+        fixes.apply_all(str(platform), str(fw), "xiao_sim", "4.4.0")
         assert "no fixes.baseline entry for drivers/orphan.c" in capsys.readouterr().out

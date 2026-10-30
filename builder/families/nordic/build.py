@@ -47,7 +47,7 @@ board = env.BoardConfig()
 family = resolve_board_family(board, env.get("BOARD", ""))
 
 # builder/ is not a package: sibling modules come into reach the same
-# way builder/frameworks/zephyr.py reaches zephyr_fixes — this family's
+# way builder/frameworks/zephyr/main.py reaches fixes — this family's
 # builder dir on sys.path (SCons deletes __file__ in SConscript frames,
 # so the host path comes from family.host_dir()).
 sys.path.insert(0, join(family.host_dir(), "builder", "families", "nordic"))

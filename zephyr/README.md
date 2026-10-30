@@ -3,8 +3,7 @@
 This directory carries everything Zephyr needs beyond the stock
 `framework-zephyr` package: board definitions, bundled west modules, and
 fixes for upstream gaps. Applied before the build by
-`builder/frameworks/zephyr.py` + `builder/frameworks/zephyr_fixes.py` +
-`builder/frameworks/zephyr_modules.py`.
+`builder/frameworks/zephyr/` (main + fixes + modules + patch + override).
 
 ## Layout
 
@@ -111,11 +110,11 @@ change either way.
 
 ## Tooling layout
 
-- `builder/frameworks/zephyr.py`           — orchestrator: boards copy, env prep, module provisioning, fixes, engine SConscript
-- `builder/frameworks/zephyr_modules.py`   — module provisioner (pin.yml gates, vendored refresh, pinned clones)
-- `builder/frameworks/zephyr_fixes.py`     — fixes walker (framework + board level, baseline gating)
-- `builder/frameworks/zephyr_patch.py`     — executor A: applies one `.patch` (idempotent, new-block-first)
-- `builder/frameworks/zephyr_override.py`  — executor B: copies one override (baseline verification)
+- `builder/frameworks/zephyr/main.py`      — orchestrator: boards copy, env prep, module provisioning, fixes, engine SConscript
+- `builder/frameworks/zephyr/modules.py`   — module provisioner (pin.yml gates, vendored refresh, pinned clones)
+- `builder/frameworks/zephyr/fixes.py`     — fixes walker (framework + board level, baseline gating)
+- `builder/frameworks/zephyr/patch.py`     — executor A: applies one `.patch` (idempotent, new-block-first)
+- `builder/frameworks/zephyr/override.py`  — executor B: copies one override (baseline verification)
 
 The executors are stateless pure functions: they only know "source file +
 root + target path"; they read no manifest and know nothing about boards or

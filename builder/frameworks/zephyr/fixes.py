@@ -27,11 +27,11 @@ baseline context when available; override drift fails equally hard (a
 whole-file copy over an unknown tree is the most destructive silent
 failure there is), symmetric with the patch path.
 
-Executors are the unchanged pure modules zephyr_patch / zephyr_override.
+Executors are the unchanged pure modules patch / override.
 The board's family root is discovered by glob (zephyr/*/boards/*), the same
 convention the builder uses for board dirs -- adding a family requires no
 change here either.
-Interface (call site in builder/frameworks/zephyr.py is unchanged):
+Interface (call site in builder/frameworks/zephyr/main.py is unchanged):
     apply_all(platform_dir, framework_dir, zephyr_board, version=None)
 """
 
@@ -46,8 +46,8 @@ _HERE = dirname(__file__)
 if _HERE not in os.sys.path:
     os.sys.path.insert(0, _HERE)
 
-import zephyr_override  # noqa: E402
-import zephyr_patch  # noqa: E402
+import override  # noqa: E402
+import patch  # noqa: E402
 
 BASELINE_NAME = "fixes.baseline"
 PATCH_SUFFIX = ".patch"
@@ -105,7 +105,7 @@ def apply_fixes_dir(fixes_dir, target_root, label, version=None):
             # The patch's own +++ header is the target of record (a patch
             # file's name is just a label; several patches may edit the
             # same file). Baseline keys use that target, not the name.
-            target = zephyr_patch.patch_target(src)
+            target = patch.patch_target(src)
             if not target:
                 raise RuntimeError("patch has no +++ target header: %s" % src)
         else:
@@ -115,7 +115,7 @@ def apply_fixes_dir(fixes_dir, target_root, label, version=None):
         if rel.endswith(PATCH_SUFFIX):
             _apply_patch_with_context(src, target_root, target, expected)
         else:
-            zephyr_override.apply_override(src, target_root, target, expected)
+            override.apply_override(src, target_root, target, expected)
 
         applied.append(target)
         if not expected:
@@ -178,7 +178,7 @@ def _load_baseline(fixes_dir):
 
 def _apply_patch_with_context(src_patch, framework_dir, target, expected_sha):
     try:
-        stats = zephyr_patch.apply_patch(src_patch, framework_dir, target)
+        stats = patch.apply_patch(src_patch, framework_dir, target)
     except RuntimeError as exc:
         detail = str(exc)
         dst = join(framework_dir, target)

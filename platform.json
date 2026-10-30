@@ -27,7 +27,7 @@
     },
     "zephyr": {
       "package": "framework-zephyr",
-      "script": "builder/frameworks/zephyr.py"
+      "script": "builder/frameworks/zephyr/main.py"
     }
   },
   "packages": {

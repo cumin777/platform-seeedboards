@@ -1,4 +1,4 @@
-"""Unit tests for builder/frameworks/zephyr_patch.py (patch executor).
+"""Unit tests for builder/frameworks/patch.py (patch executor).
 
 One case per hunk shape -- insertion, replacement, deletion -- each
 asserting both the first run and the idempotent re-run. These pin the
@@ -13,11 +13,11 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BUILDER_FRAMEWORKS = REPO_ROOT / "builder" / "frameworks"
+BUILDER_FRAMEWORKS = REPO_ROOT / "builder" / "frameworks" / "zephyr"
 if str(BUILDER_FRAMEWORKS) not in sys.path:
     sys.path.insert(0, str(BUILDER_FRAMEWORKS))
 
-import zephyr_patch  # noqa: E402
+import patch  # noqa: E402
 
 
 def apply(tmp_path, patch_body, content):
@@ -25,11 +25,11 @@ def apply(tmp_path, patch_body, content):
     fw = tmp_path / "fw"
     fw.mkdir()
     (fw / "f.c").write_text(content, encoding="utf-8", newline="\n")
-    patch = tmp_path / "f.patch"
-    patch.write_text(patch_body, encoding="utf-8", newline="\n")
-    stats1 = zephyr_patch.apply_patch(str(patch), str(fw), "f.c")
+    patch_file = tmp_path / "f.patch"
+    patch_file.write_text(patch_body, encoding="utf-8", newline="\n")
+    stats1 = patch.apply_patch(str(patch_file), str(fw), "f.c")
     after1 = (fw / "f.c").read_text(encoding="utf-8")
-    stats2 = zephyr_patch.apply_patch(str(patch), str(fw), "f.c")
+    stats2 = patch.apply_patch(str(patch_file), str(fw), "f.c")
     after2 = (fw / "f.c").read_text(encoding="utf-8")
     return stats1, after1, stats2, after2
 
@@ -147,7 +147,7 @@ class TestDeletionMissStats:
             "other-content\n", encoding="utf-8", newline="\n")
         patch_file = tmp_path / "f.patch"
         patch_file.write_text(self.BODY, encoding="utf-8", newline="\n")
-        stats = zephyr_patch.apply_patch(str(patch_file), str(fw), "f.c")
+        stats = patch.apply_patch(str(patch_file), str(fw), "f.c")
         assert stats["applied"] == 0
         assert stats["already-applied"] == 0
         assert stats["already-applied-deletion"] == 1
@@ -158,11 +158,11 @@ class TestNoMatch:
         fw = tmp_path / "fw"
         fw.mkdir()
         (fw / "f.c").write_text("totally different content\n", encoding="utf-8")
-        patch = tmp_path / "f.patch"
-        patch.write_text(
+        patch_file = tmp_path / "f.patch"
+        patch_file.write_text(
             "--- a/f.c\n+++ b/f.c\n@@ -1,2 +1,2 @@\n"
             " line-a\n-line-old\n+line-new\n line-c\n",
             encoding="utf-8", newline="\n",
         )
         with pytest.raises(RuntimeError, match="patch hunk did not match"):
-            zephyr_patch.apply_patch(str(patch), str(fw), "f.c")
+            patch.apply_patch(str(patch_file), str(fw), "f.c")

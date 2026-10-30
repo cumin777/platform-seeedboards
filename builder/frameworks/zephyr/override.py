@@ -9,7 +9,7 @@ Includes baseline_sha verification to catch silent regressions when the framewor
 package is upgraded (a whole-file override could silently clobber a newer upstream
 file).
 
-Dispatched by builder/frameworks/zephyr_fixes.py. Interface:
+Dispatched by builder/frameworks/zephyr/fixes.py. Interface:
     apply_override(src_override, framework_dir, target_relpath, baseline_sha=None)
 """
 

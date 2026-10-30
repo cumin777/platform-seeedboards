@@ -7,7 +7,7 @@ Reads no manifest, knows nothing about board/version, does no directory scan —
 it only receives "which patch, to which framework root". Idempotent: a hunk
 already present is skipped.
 
-Dispatched by builder/frameworks/zephyr_fixes.py. Interface:
+Dispatched by builder/frameworks/zephyr/fixes.py. Interface:
     apply_patch(src_patch, framework_dir, target_relpath=None)
 """
 
