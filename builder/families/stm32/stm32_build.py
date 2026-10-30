@@ -46,7 +46,7 @@ env.Append(
             action=env.VerboseAction(
                 '"$PYTHONEXE" "%s" -i $SOURCES -b ${UF2_BASE_ADDR} '
                 '--family-id ${UF2_FAMILY_ID} -o $TARGET'
-                % join(platform.get_dir(), "builder", "tools", "uf2conv.py"),
+                % join(platform.get_dir(), "builder", "families", "stm32", "uf2conv.py"),
                 "Building $TARGET",
             ),
             suffix=".uf2",
@@ -106,11 +106,11 @@ else:
 target_buildprog = env.Alias("buildprog", target_buildprog_sources)
 
 if upload_protocol == "uf2":
-    tools_dir = join(platform.get_dir(), "builder", "tools")
+    family_dir = join(platform.get_dir(), "builder", "families", "stm32")
     volume_label = uf2_config.get("volume_label", "XIAOC5BOOT")
     env.Replace(
         UPLOADCMD='"$PYTHONEXE" "%s" "$SOURCE" --label %s --port "${UPLOAD_PORT}"'
-        % (join(tools_dir, "uf2upload.py"), volume_label),
+        % (join(family_dir, "uf2upload.py"), volume_label),
     )
 
     def before_uf2_upload(target, source, env):  # pylint: disable=unused-argument

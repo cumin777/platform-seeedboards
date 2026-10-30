@@ -26,19 +26,6 @@ UF2_FLAG_EXTENSION_ID = 0x4000
 UF2_PAYLOAD_SIZE = 256
 UF2_BLOCK_SIZE = 512
 
-# Board family IDs
-FAMILY_IDS = {
-    "stm32c5": 0x00C5C5C5,
-    "stm32f4": 0x57755A57,
-    "stm32f3": 0x6B846188,
-    "stm32h5": 0x4E8F1C5D,
-    "rp2040": 0xE48BFF56,
-    "rp2350": 0xE48BFF57,
-    "atmel-samd": 0x68ED2B88,
-    "esp32": 0x1C5E21E0,
-    "nrf52": 0x1B57745F,
-}
-
 
 def convert_bin_to_uf2(bin_data, base_addr, family_id=0x00C5C5C5,
                        payload_size=UF2_PAYLOAD_SIZE):
@@ -105,13 +92,9 @@ def main():
         help="Base address (hex, e.g. 0x08008000)"
     )
     parser.add_argument(
-        "-f", "--family", default="stm32c5",
-        choices=list(FAMILY_IDS.keys()),
-        help="Board family (default: stm32c5)"
-    )
-    parser.add_argument(
-        "--family-id", type=lambda x: int(x, 0), default=None,
-        help="Raw family ID (overrides --family)"
+        "--family-id", type=lambda x: int(x, 0), required=True,
+        help="Raw UF2 family ID (e.g. 0x00C5C5C5); the caller (stm32_build.py)"
+             " passes the board manifest value"
     )
 
     args = parser.parse_args()
@@ -125,14 +108,12 @@ def main():
         else:
             output = args.input + ".uf2"
 
-    # Determine family ID
-    family_id = args.family_id if args.family_id else FAMILY_IDS[args.family]
-
     # Read input
     with open(args.input, "rb") as f:
         bin_data = f.read()
 
     # Convert
+    family_id = args.family_id
     uf2_data = convert_bin_to_uf2(bin_data, args.base, family_id)
 
     # Write output

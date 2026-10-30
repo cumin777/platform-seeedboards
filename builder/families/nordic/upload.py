@@ -273,7 +273,7 @@ def _configure_nrfutil_mcumgr(env, platform, board, protocol):
     # loops cannot be interrupted at all. A child process receives the
     # console Ctrl+C event itself and dies immediately, taking nrfutil
     # with it -- the same mechanism that keeps the STM32 UF2 uploader
-    # (uf2upload.py) interruptible.
+    # (builder/families/stm32/uf2upload.py) interruptible.
     # Do not install an upload-only tool during a normal build.  Besides
     # avoiding unnecessary downloads in CI, this keeps compilation
     # isolated from the host's tool-installation state.
